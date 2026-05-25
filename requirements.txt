@@ -1,0 +1,5 @@
+# requirements.txt
+torch
+accelerate
+sentencepiece
+qwen-vl-utils
