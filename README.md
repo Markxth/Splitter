@@ -1,3 +1,5 @@
+# Splitter Documentation
+
 ## 1. What this is
 
 This is an image splitter built to take an image, split it, and return the results. It is specifically optimised for storyboard images which have inner smaller panels, and so, usually a border. This tool is
