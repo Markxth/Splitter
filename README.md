@@ -50,3 +50,11 @@ Images are processed in grayscale for simpler contour extraction
 Adaptive thresholding is used instead of fixed thresholding to improve robustness across different image conditions
 Bounding rectangles are used to crop detected panels
 Panels are sorted row-by-row to preserve reading order as much as possible
+
+5. Extra notes/Others
+
+If one changes the name of the .py file for any given reason, and the code does not work anymore, it is due to the way streamlit's cache works. Just run the following line and it will work : 
+
+  taskkill /F /IM python.exe
+
+
