@@ -7,7 +7,7 @@ import numpy as np
 def split_sort(contours, image):
     if contours is None : 
         return [] 
-    limit = image.shape[0] * 0.02  # was 0.2, too large
+    limit = image.shape[0] * 0.02 
     bboxes = [cv.boundingRect(c) for c in contours]
     bboxes = sorted(bboxes, key=lambda b: b[1])
     rows = []
@@ -40,7 +40,7 @@ def splitter(image):
     panels_sorted = split_sort(valid_contours, bnaimage)
     panels = []
     for x, y, w, h in panels_sorted:
-        panel = bnaimage[y:y+h, x:x+w]  # was w:w+h, should be x:x+w
+        panel = bnaimage[y:y+h, x:x+w] 
         panels.append(panel)
     return panels
 
