@@ -26,10 +26,6 @@ Return the resulting list/vector of split panels
 The contour filtering currently assumes storyboard-like structures with relatively clear panel boundaries and spacing. Whilst it may work on other pictures, it was built with the aforementioned prototype
 structure in mind.
 
-The following images may return weird results or just not work, however, see examples/negative for applied examples: 
-
--random pictures without any sort of structure to them 
-
 3. Current Detection Heuristics
 
 The system currently uses:
@@ -51,7 +47,17 @@ Adaptive thresholding is used instead of fixed thresholding to improve robustnes
 Bounding rectangles are used to crop detected panels
 Panels are sorted row-by-row to preserve reading order as much as possible
 
-5. Extra notes/Others
+5. Use Cases
+
+Since this tool wss created for storyboard images, a storyboard image will work perfectly, provided it does not have multiple storyboards within a storyboard - see examples/negative/example1. For an example of a good use case, see examples/positive/example1
+
+The following use cases may return undesirable results and/or unreliable results. Since this tool was built with storyboard images in mind, it is natural for this to happen, and so the following use cases will most likely NOT work or work in an undesirable manner : 
+
+   - Images with a lot of small pannels - see examples/negative/example1
+   - Random images with a given object, animal, person, etc. For example : an image with a kangaroo will not work, specifically one will received an "index out of range" error -  see examples/negative/example2
+     
+
+7. Extra notes/Others
 
 If one changes the name of the .py file for any given reason, and the code does not work anymore, it is due to the way streamlit's cache works. Just run the following line and it will work : 
 
