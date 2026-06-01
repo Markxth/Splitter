@@ -6,30 +6,42 @@ import numpy as np
 
 def vertical_split_sort(panel, image_area, image_y) : 
 #this one is for the cases when the image is split badly vertically
-        panel_area = panel.shape[0] * panel.shape[1] #height x width
-        if (panel_area < 0.25 * image_area) : 
-            return [panel] #make it a list
+    panel_area = panel.shape[0] * panel.shape[1] #height x width
+    if (panel_area < 0.25 * image_area) : 
+        return [panel] #make it a list
 
-        rows_bright = np.mean(panel, axis= 1 ) 
-        bright_average = np.where(rows_bright > 240)[0] #the value after ">" can be changed depending on context
+    rows_bright = np.mean(panel, axis= 1 ) 
+    bright_average = np.where(rows_bright > 200 )[0] #the value after ">" can be changed depending on context
+    #print(f"Panel shape: {panel.shape}, dark rows found: {len(bright_average)}, values: {bright_average[:10]}")
+#adding a row size check as panels with lines within them mess up the panel splitter
 
-        lists = [] 
-        cluster_start =0  
-        #find cluster of bright rows
-        for x in range(1, len(bright_average)) : 
-            if(bright_average[x] - bright_average[x-1] > 10 ) : 
-                lists.append( (cluster_start + bright_average[x])  // 2 ) #for a simple thin line it is unnecessary but for more complex images it is beneficial to filter clusters of numbers
-                cluster_start = bright_average[x] 
-        
-        if not lists : 
-            return None 
-        results = []
-        prev = 0 
-        for i in lists : 
-            results.append(panel[prev:i , :])
-            prev = i
-        results.append(panel[prev:, :]) #last row, 'till the end
-        return results 
+    width_bright = [] 
+    for row in bright_average : 
+        row_tbd = panel[row, :] 
+        pixels_bright = np.sum(row_tbd > 200)
+        if pixels_bright > 0.95 * panel.shape[1] : 
+            width_bright.append(row)
+
+        bright_average = np.array(width_bright)  
+
+    lists = [] 
+    cluster_start =0  
+
+    #find cluster of bright rows
+    for x in range(1, len(bright_average)) : 
+        if(bright_average[x] - bright_average[x-1] > 10 ) : 
+            lists.append( (cluster_start + bright_average[x])  // 2 ) #for a simple thin line it is unnecessary but for more complex images it is beneficial to filter clusters of numbers
+            cluster_start = bright_average[x] 
+    
+    if not lists : 
+        return None 
+    results = []
+    prev = 0 
+    for i in lists : 
+        results.append(panel[prev:i , :])
+        prev = i
+    results.append(panel[prev:, :]) #last row, 'till the end
+    return results 
 
 def split_sort(contours, image):
     if contours is None : 
