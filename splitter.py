@@ -7,7 +7,7 @@ import numpy as np
 def split_sort(contours, image):
     if contours is None : 
         return [] 
-    limit = image.shape[0] * 0.02 
+    limit = image.shape[0] * 0.01 #testing instead of 0.02
     bboxes = [cv.boundingRect(c) for c in contours]
     bboxes = sorted(bboxes, key=lambda b: b[1])
     rows = []
@@ -28,13 +28,13 @@ def splitter(image):
     file_bytes = np.frombuffer(image.read(), np.uint8)
     bnaimage = cv.imdecode(file_bytes, cv.IMREAD_GRAYSCALE)
     bnaimage = cv.GaussianBlur(bnaimage, (5,5), 0) 
-    thresh_image = cv.adaptiveThreshold(bnaimage, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 11, 2)  #to match black on white 
-    contours, _ = cv.findContours(thresh_image, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+    thresh_image = cv.adaptiveThreshold(bnaimage, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2)  #to match black on white 
+    contours, _ = cv.findContours(thresh_image, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
     image_area = bnaimage.shape[0] * bnaimage.shape[1] 
     valid_contours = []
     for c in contours : 
         area = cv.contourArea(c)
-        if( 0.02 * image_area) < area < (0.98 * image_area):
+        if( 0.03 * image_area) < area < (0.80 * image_area):
             valid_contours.append(c)
     
     panels_sorted = split_sort(valid_contours, bnaimage)
