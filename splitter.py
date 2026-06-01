@@ -4,6 +4,33 @@ from time import sleep
 import cv2 as cv
 import numpy as np 
 
+def vertical_split_sort(panel, image_area, image_y) : 
+#this one is for the cases when the image is split badly vertically
+        panel_area = panel.shape[0] * panel.shape[1] #height x width
+        if (panel_area < 0.25 * image_area) : 
+            return [panel] #make it a list
+
+        rows_bright = np.mean(panel, axis= 1 ) 
+        bright_average = np.where(rows_bright > 240)[0] #the value after ">" can be changed depending on context
+
+        lists = [] 
+        cluster_start =0  
+        #find cluster of bright rows
+        for x in range(1, len(bright_average)) : 
+            if(bright_average[x] - bright_average[x-1] > 10 ) : 
+                lists.append( (cluster_start + bright_average[x])  // 2 ) #for a simple thin line it is unnecessary but for more complex images it is beneficial to filter clusters of numbers
+                cluster_start = bright_average[x] 
+        
+        if not lists : 
+            return None 
+        results = []
+        prev = 0 
+        for i in lists : 
+            results.append(panel[prev:i , :])
+            prev = i
+        results.append(panel[prev:, :]) #last row, 'till the end
+        return results 
+
 def split_sort(contours, image):
     if contours is None : 
         return [] 
@@ -34,14 +61,24 @@ def splitter(image):
     valid_contours = []
     for c in contours : 
         area = cv.contourArea(c)
-        if( 0.03 * image_area) < area < (0.80 * image_area):
+        if( 0.06 * image_area) < area < (0.80 * image_area):
             valid_contours.append(c)
     
     panels_sorted = split_sort(valid_contours, bnaimage)
     panels = []
+    padding = 3 #change as needed
     for x, y, w, h in panels_sorted:
-        panel = bnaimage[y:y+h, x:x+w] 
-        panels.append(panel)
+        x1 = max(0, x- padding) 
+        y1 = max(0, y - padding) 
+        x2 = min(bnaimage.shape[1], x + w + padding) 
+        y2 = min(bnaimage.shape[0], y+h+ padding) #for not going above the panel limits
+        panel = bnaimage[y1:y2, x1:x2]         #modify to add sub panel
+        sub_panels = vertical_split_sort(panel, image_area, y1)
+        if sub_panels is None : 
+            panels.append(panel) 
+        else  :
+            panels.extend(sub_panels)
+
     return panels
 
 
@@ -57,6 +94,9 @@ def main():
         with st.spinner("Splitting..."):
             panels = splitter(file_uploaded)  # was outside if block, panels not captured
             for i, panel in enumerate(panels):
+                print(type(panel), panel) 
+                if isinstance(panel, tuple) : 
+                    panel=panel[0]
                 st.image(panel, caption=f"Image number {i+1}")  # caption= needed as keyword arg
         st.toast("Splitting the image has finished!")
 
