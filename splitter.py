@@ -7,8 +7,12 @@ from dotenv import find_dotenv, load_dotenv
 import torch 
 from transformers import pipeline, AutoProcessor, AutoModelForImageTextToText
 from qwen_vl_utils import process_vision_info
+from google import genai
+import os
 
 load_dotenv(find_dotenv()) 
+client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+
 device = "cuda" if torch.cuda.is_available() else "cpu" 
 @st.cache_resource #so we load it once and that is it. 
 def load_model() : 
@@ -157,37 +161,90 @@ def splitter(image):
 
     return panels
 
+def text_analysis(text_original, text_analysis_instructions) :
+    """ IF working with a Hugging Face model uncomment this and modift the arguments to process the model, the processor and the input text
+    messages = [
+    {
+        "role": "system",
+        "content": text_analyis_instructions
+    },
+    {
+        "role": "user",
+        "content": [
+            {
+                "type": "text",
+                "text": text_input
+            }
+        ]
+    }
+] 
+    text = processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True) 
+    inputs = processor(
+    text=[text],
+    padding=True,
+    return_tensors="pt",
+)
+    inputs = inputs.to(model.device)
+
+    with torch.no_grad():
+        generated_ids = model.generate(**inputs, max_new_tokens=1000)
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        output_text = processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False
+        )
+
+    return output_text[0] 
+    """
+    client = genai.Client()
+
+    response = client.models.generate_content(
+        model="gemini-3.5-flash",
+        contents=text_original,
+        config = {
+            "system_instruction" : text_analysis_instructions
+        }
+    )
+    output = response.text
+    return output 
+    
+def comparison(session_panels, embed_text, comparison_text) : 
+    for i in session_panels :
+        response = client.models.generate_content(
+            model="gemini-3.5-flash",
+            contents=[session_panels[i], embed_text],
+            config = {
+                "system_instruction" : comparison_text
+            }
+        )
+    output =[]
+    output.append(response.text) 
+    return [output]
 
 def main():
     if "analysis_results" not in st.session_state : 
         st.session_state.analysis_results = {}
-    
+    if "text_results" not in st.session_state : 
+        st.session_state.text_results = {} 
+
     st.set_page_config("wide") 
     st.title("Storyboard Analyzer &  Splitter")
     st.text("Upload an image to be split in different parts")
     model, processor = load_model() 
 
+    comparisons = []
+
     text_original = st.text_area("Please input the text used to generate the storyboard for analysis.", placeholder = "Input the original text here." ) 
 
-    text_input = f"""
-    You are analysing sub-panels of a storyboard image. Each panel represents a part of the text used to generate the storyboard. Your task is to analyze the sub-panel and map it to the part of the text it corresponds to, and then describe the content of the panel in detail.
-    
-    Describe this image using the following specific categories : 
-                    Object : descriptions of specific objects or entities.
-                    Attribute : mentions of properties such as color, size, or shape.
-                    Number : mentions of quantities or numerical values.
-                    Text : descriptions of scene text or written content visible in the image.
-                    Relation : semantic relationships of objects (e.g., prepositions or adjectives) within the description.
-                    Fact : mentions of named entities such as people, places, or countries.
-                    Scene_Description : an overall description of the image, describing the image as a whole and what it is showing.
-                    Then, output the result in a JSON format using those categories only and nothing else.
+    text_input = f"""You are analysing a single sub-panel of a storyboard image.
 
-Here is the text you ought to compare the sub panels to : {text_original}
-
-Output the following : 
-
-## STEP 1 - JSON ANALYSIS
-Output ONLY this raw JSON, no backticks, no markdown:
+## STEP 1 - VISUAL ANALYSIS (image only)
+Look ONLY at what is physically visible in the image. Do not use the reference text below.
+Output raw JSON with no backticks, no markdown:
 {{
   "Object": [],
   "Attribute": {{}},
@@ -195,17 +252,33 @@ Output ONLY this raw JSON, no backticks, no markdown:
   "Text": "",
   "Relation": {{}},
   "Fact": {{}},
-  "Scene_Description": ""
-}}
+  "Scene_Description": "",
+  
+Categories:
+- Object: physical objects or entities you can see in the image
+- Attribute: visual properties like color, size, shape of those objects
+- Number: quantities you can count or read in the image itself
+- Text: any written text physically visible on screen or in the scene
+- Relation: spatial or semantic relationships between visible objects
+- Fact: named entities visible or readable in the image
+- Scene_Description: overall description of what the image shows
 
-## STEP 2 - TEXT ANNOTATION
-Only if an original text is provided below, output the relevant portion 
-with inline XML tags like <object>car</object>, <relation>beside</relation> etc.
-If no text is provided output: "No initial text provided."
+    """
 
-## ORIGINAL TEXT
-{text_original if text_original else "None provided."}
-"""
+    text_analyis_instructions = f""""Text_Mapping": {{
+    "Original text : {text_original}
+    "Embedded_Matching_Text": "Rewrite the original text with inline XML tags marking entities using the attributes in {text_input} (e.g., <object>car</object>, <relation>beside</relation>, <attribute>red</attribute>). Do NOT add or change the text in ANY other way than indicated."
+    }}
+""" 
+    
+    comparison_text = f""" Analyze the panels in comparison to the original text. 
+
+    The original text is : {text_original} 
+    For each panel, output the following on separate lines :
+
+    1. Which part of the ORIGINAL TEXT without ANY change or embedding matches this panel. Maximum 1 sentence per panel.
+    2. What hallucination type you observe based on the original categories in the original text, if any. If there are no hallucinations simply output : "No hallucinations detected.
+    """ 
     
     user_text = st.text_area("Vision analysis instructions", value=text_input)
     file_uploaded = st.file_uploader("Upload a file", type=["png","jpg","jpeg"])
@@ -249,15 +322,21 @@ If no text is provided output: "No initial text provided."
         if st.button("Run QWEN analsysis", type="secondary", key=f"Button_{i}") :
                 for i, pil_panel in panels_kept : 
                     panel_result = run_qwen(pil_panel, processor, model, user_text) 
+                    if isinstance(panel_result, list) : 
+                        panel_result = panel_result[0] 
+                    panel_result = panel_result.strip().removeprefix("json").strip()
                     st.session_state.analysis_results[i] = panel_result 
                     st.success(f"Panel {i} has been sucessfully analyzed!")
-                    st.markdown(panel_result) #for nice JSON formatting 
-                    st.balloons() 
-                
-                
-                    
-    
-        st.toast("Splitting the image has finished!")
+                    st.code(panel_result, language = 'json') #for nice JSON formatting 
+        
+    if st.button("Embed the text.") :             
+        text_analysis_result = text_analysis(text_original, text_analyis_instructions)
+        st.session_state.text_results = text_analysis_result
+        st.markdown(text_analysis_result)
+
+    if st.button("AI Comparison") : 
+       comparisons = comparison(panels_kept, st.session_state.analysis_resultz, comparison_text)
+       st.markdown(comparisons)
 
 if __name__ == "__main__":
     main()
