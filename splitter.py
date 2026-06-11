@@ -9,6 +9,8 @@ from transformers import pipeline, AutoProcessor, AutoModelForImageTextToText
 from qwen_vl_utils import process_vision_info
 from google import genai
 import os
+import json 
+from time import sleep
 
 load_dotenv(find_dotenv()) 
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
@@ -212,24 +214,30 @@ def text_analysis(text_original, text_analysis_instructions) :
     output = response.text
     return output 
     
-def comparison(session_panels, embed_text, comparison_text) : 
+def comparison(session_panels, embed_text, comparison_text, text_original) : #embed text being the analysis results, idk why I named it that way
+    #this uses a free Gemini API Key, as Google allows free Gemini use up to a certain point
+    output = []
     for i in session_panels :
+        idx, img = i
+        img_desc = embed_text.get(idx, "no analysis needed") #get returns the description if using its index key(self-indexed) 
         response = client.models.generate_content(
             model="gemini-3.5-flash",
-            contents=[session_panels[i], embed_text],
+            contents=[img, img_desc, text_original],
             config = {
                 "system_instruction" : comparison_text
             }
         )
-    output =[]
-    output.append(response.text) 
-    return [output]
+        output.append(response.text) 
+        time.sleep(4)
+    return output #it would break the \n later when I call the function
 
 def main():
     if "analysis_results" not in st.session_state : 
         st.session_state.analysis_results = {}
     if "text_results" not in st.session_state : 
         st.session_state.text_results = {} 
+    if "panels_kept" not in st.session_state : 
+        st.session_state.panels_kept = {} 
 
     st.set_page_config("wide") 
     st.title("Storyboard Analyzer &  Splitter")
@@ -244,7 +252,7 @@ def main():
 
 ## STEP 1 - VISUAL ANALYSIS (image only)
 Look ONLY at what is physically visible in the image. Do not use the reference text below.
-Output raw JSON with no backticks, no markdown:
+Output raw valid JSON with no backticks, no markdown and nothing extra added to it. Only the JSON results:
 {{
   "Object": [],
   "Attribute": {{}},
@@ -277,7 +285,9 @@ Categories:
     For each panel, output the following on separate lines :
 
     1. Which part of the ORIGINAL TEXT without ANY change or embedding matches this panel. Maximum 1 sentence per panel.
-    2. What hallucination type you observe based on the original categories in the original text, if any. If there are no hallucinations simply output : "No hallucinations detected.
+    2. What hallucination type you observe based on the original categories in the original text, if any. If there are no hallucinations simply output : "No hallucinations detected".
+    3. An analysis between the original text represented by : {text_original} and between the Image Description
+    Output a clear, concise response.
     """ 
     
     user_text = st.text_area("Vision analysis instructions", value=text_input)
@@ -287,7 +297,7 @@ Categories:
         st.success("File uploaded successfully!")
 
         with st.spinner("Splitting..."):
-            panels = splitter(file_uploaded)  # was outside if block, panels not captured
+            panels = splitter(file_uploaded) 
         
         st.text("Choose the panels which you want to keep and be analyzed by QWEN!")
         st.write("Please uncheck the panels you do not wish to keep.") 
@@ -328,15 +338,28 @@ Categories:
                     st.session_state.analysis_results[i] = panel_result 
                     st.success(f"Panel {i} has been sucessfully analyzed!")
                     st.code(panel_result, language = 'json') #for nice JSON formatting 
-        
-    if st.button("Embed the text.") :             
+
+        if st.button("Export to JSON") :
+            if st.session_state.panels_kept is None : 
+                st.warning("Run the analysis first!")
+            with open("results.json" , "w") as f : 
+                json.dump(
+                    st.session_state.analysis_results, f, indent = 4
+                )
+            st.success("Succesfully exported to a JSON file!") 
+    
+    
+    if st.button("Embed the text") :             
         text_analysis_result = text_analysis(text_original, text_analyis_instructions)
         st.session_state.text_results = text_analysis_result
         st.markdown(text_analysis_result)
 
     if st.button("AI Comparison") : 
-       comparisons = comparison(panels_kept, st.session_state.analysis_resultz, comparison_text)
-       st.markdown(comparisons)
+        if not st.session_state.analysis_results:
+            st.warning("Run the QWEN analysis first!")
+    else : 
+            comparisons = comparison(st.session_state.panels_kept, st.session_state.analysis_results, comparison_text, text_original)
+            st.markdown("\n".join(comparisons) ) 
 
 if __name__ == "__main__":
     main()
