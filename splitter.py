@@ -228,7 +228,7 @@ def comparison(session_panels, embed_text, comparison_text, text_original) : #em
             }
         )
         output.append(response.text) 
-        time.sleep(4)
+        #time.sleep(4)
     return output #it would break the \n later when I call the function
 
 def main():
@@ -237,7 +237,7 @@ def main():
     if "text_results" not in st.session_state : 
         st.session_state.text_results = {} 
     if "panels_kept" not in st.session_state : 
-        st.session_state.panels_kept = {} 
+        st.session_state.panels_kept = [] 
 
     st.set_page_config("wide") 
     st.title("Storyboard Analyzer &  Splitter")
@@ -271,6 +271,7 @@ Categories:
 - Fact: named entities visible or readable in the image
 - Scene_Description: overall description of what the image shows
 
+After this at another section named "Justifications" where you justify and argue why you gave the answers you gave in relation to the Scene_Description category IN DETAIL. 
     """
 
     text_analyis_instructions = f""""Text_Mapping": {{
@@ -299,7 +300,7 @@ Categories:
         with st.spinner("Splitting..."):
             panels = splitter(file_uploaded) 
         
-        st.text("Choose the panels which you want to keep and be analyzed by QWEN!")
+        st.text("Choose the panels which you want to keep and be analyzed by QWEN.")
         st.write("Please uncheck the panels you do not wish to keep.") 
 
         panels_kept = []
@@ -338,6 +339,7 @@ Categories:
                     st.session_state.analysis_results[i] = panel_result 
                     st.success(f"Panel {i} has been sucessfully analyzed!")
                     st.code(panel_result, language = 'json') #for nice JSON formatting 
+                st.session_state.panels_kept = panels_kept #DELETE LATER if it breaks the code
 
         if st.button("Export to JSON") :
             if st.session_state.panels_kept is None : 
@@ -354,12 +356,17 @@ Categories:
         st.session_state.text_results = text_analysis_result
         st.markdown(text_analysis_result)
 
+    if st.session_state.text_results:
+        st.markdown(st.session_state.text_results)
+
+
     if st.button("AI Comparison") : 
         if not st.session_state.analysis_results:
             st.warning("Run the QWEN analysis first!")
-    else : 
+        else : 
             comparisons = comparison(st.session_state.panels_kept, st.session_state.analysis_results, comparison_text, text_original)
-            st.markdown("\n".join(comparisons) ) 
+            st.markdown("\n".join(comparisons) )
+
 
 if __name__ == "__main__":
     main()
