@@ -170,8 +170,7 @@ Handles cases where panels were not split vertically by the initial segmentation
 5. Clusters consecutive bright rows and takes the midpoint of each cluster as the split point
 6. Slices the panel at each split point and returns the sub-panels
 
-> **Known issue:** The line `bright_average = np.array(width_bright)` is currently inside the first loop and should be moved outside it to avoid incorrect behaviour on panels with multiple bright rows.
-
+   
 ---
 
 ### `text_analysis(text_original, text_analysis_instructions)`
