@@ -42,7 +42,7 @@ pip install -r requirements.txt
 ```bash
 # 1. Clone the repository
 git clone https://github.com/Markxth/Splitter.git
-cd [Splitter]
+cd Splitter
 
 # 2. Install dependencies
 pip install -r requirements.txt
