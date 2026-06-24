@@ -11,9 +11,21 @@ from google import genai
 import os
 import json 
 from time import sleep
+from io import BytesIO
+import base64
+import requests
+from streamlit_cropper import st_cropper 
 
 load_dotenv(find_dotenv()) 
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+PURDUE_API_KEY = os.getenv("PURDUE_API_KEY") ; 
+URL = "https://genai.rcac.purdue.edu/api/chat/completions"
+
+headers = { 
+    "Authorization": f"Bearer {PURDUE_API_KEY}",
+    "Content-Type": "application/json"
+}
+
 
 device = "cuda" if torch.cuda.is_available() else "cpu" 
 @st.cache_resource #so we load it once and that is it. 
@@ -63,7 +75,7 @@ def run_qwen(panel, processor, model, text_input) :
     inputs = inputs.to(model.device) 
 
     with torch.no_grad():
-        generated_ids = model.generate(**inputs, max_new_tokens=600)
+        generated_ids = model.generate(**inputs, max_new_tokens=1000)
         
         # Trim the prompt 
         generated_ids_trimmed = [
@@ -85,8 +97,8 @@ def vertical_split_sort(panel, image_area, image_y) : #this one is for the cases
 
     rows_bright = np.mean(panel, axis= 1 ) 
     bright_average = np.where(rows_bright > 200 )[0] #the value after ">" can be changed depending on context
-    
     width_bright = [] #adding a row size check as panels with lines within them mess up the panel splitter
+
     for row in bright_average : 
         row_tbd = panel[row, :] 
         pixels_bright = np.sum(row_tbd > 200)
@@ -116,7 +128,7 @@ def vertical_split_sort(panel, image_area, image_y) : #this one is for the cases
 def split_sort(contours, image):
     if contours is None : 
         return [] 
-    limit = image.shape[0] * 0.01 #testing instead of 0.02
+    limit = image.shape[0] * 0.01 #0.01 can be changed on a per-image basis.
     bboxes = [cv.boundingRect(c) for c in contours]
     bboxes = sorted(bboxes, key=lambda b: b[1])
     rows = []
@@ -213,31 +225,85 @@ def text_analysis(text_original, text_analysis_instructions) :
     )
     output = response.text
     return output 
+
+def to_b64(img) : 
+    if img is None :
+        st.warning("No image was passed!") 
+        return ""
+
+    buffer = BytesIO() #
+    img.save(buffer, format = "PNG") 
+    img_bytes = buffer.getvalue()
+    return base64.b64encode(img_bytes).decode("utf-8")
     
-def comparison(session_panels, embed_text, comparison_text, text_original) : #embed text being the analysis results, idk why I named it that way
-    #this uses a free Gemini API Key, as Google allows free Gemini use up to a certain point
+def comparison(session_panels, embed_text, analysis_text, text_original) : #embed text being the analysis results, idk why I named it that way
     output = []
     for i in session_panels :
         idx, img = i
         img_desc = embed_text.get(idx, "no analysis needed") #get returns the description if using its index key(self-indexed) 
-        response = client.models.generate_content(
-            model="gemini-3.5-flash",
-            contents=[img, img_desc, text_original],
-            config = {
-                "system_instruction" : comparison_text
-            }
-        )
-        output.append(response.text) 
-        #time.sleep(4)
-    return output #it would break the \n later when I call the function
+        
+        #convert to base64
+
+        base64_image = to_b64(img)
+        if not base64_image:
+            continue
+        body = {
+            "model": "llama4:latest", 
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"Panel Index: {idx}\n\n"
+                                f"Prior QWEN Visual Analysis Metadata:\n{img_desc}\n\n"
+                                f"Original Generation Text Script:\n{text_original}"
+                            )
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "system": analysis_text,
+            "stream": False #to get a single block
+        }
+        
+         #Request execution - as per RCAC
+        try:
+            response = requests.post(URL, headers=headers, json=body)
+            
+            if response.status_code == 200:
+                res_data = response.json()
+                analysis_content = res_data["choices"][0]["message"]["content"]
+                output.append(analysis_content)
+            else:
+                error_msg = f"Panel {idx} API Error: Status {response.status_code} - {response.text}"
+                print(error_msg)
+                output.append(error_msg)
+                
+        except Exception as e:
+            output.append(f"Exception raised executing panel {idx}: {str(e)}")
+            
+    return output
 
 def main():
+    #due to the way Streamlit works, one wants to store everything per run in a cache, else all is lost per rerun.
     if "analysis_results" not in st.session_state : 
         st.session_state.analysis_results = {}
     if "text_results" not in st.session_state : 
         st.session_state.text_results = {} 
     if "panels_kept" not in st.session_state : 
         st.session_state.panels_kept = [] 
+    if "cropped_panels" not in st.session_state : 
+        st.session_state.cropped_panels = {} #PIL image
+    if "crop_mode" not in st.session_state :
+        st.session_state.crop_mode = {} 
 
     st.set_page_config("wide") 
     st.title("Storyboard Analyzer &  Splitter")
@@ -248,8 +314,9 @@ def main():
 
     text_original = st.text_area("Please input the text used to generate the storyboard for analysis.", placeholder = "Input the original text here." ) 
 
+#QWEN instructions
     text_input = f"""You are analysing a single sub-panel of a storyboard image.
-
+ 
 ## STEP 1 - VISUAL ANALYSIS (image only)
 Look ONLY at what is physically visible in the image. Do not use the reference text below.
 Output raw valid JSON with no backticks, no markdown and nothing extra added to it. Only the JSON results:
@@ -272,24 +339,44 @@ Categories:
 - Scene_Description: overall description of what the image shows
 
 After this at another section named "Justifications" where you justify and argue why you gave the answers you gave in relation to the Scene_Description category IN DETAIL. 
-    """
+    
+DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, say WHY.    
+"""
 
-    text_analyis_instructions = f""""Text_Mapping": {{
+#text embedding 
+    text_analyis_instructions = f"""Text_Mapping": {{
     "Original text : {text_original}
     "Embedded_Matching_Text": "Rewrite the original text with inline XML tags marking entities using the attributes in {text_input} (e.g., <object>car</object>, <relation>beside</relation>, <attribute>red</attribute>). Do NOT add or change the text in ANY other way than indicated."
     }}
 """ 
-    
-    comparison_text = f""" Analyze the panels in comparison to the original text. 
+ #AI Analysis   
+    comparison_text = f""" You are given an original text and a set of panels to analyze.
 
-    The original text is : {text_original} 
-    For each panel, output the following on separate lines :
+Original Text:
+{text_original}
 
-    1. Which part of the ORIGINAL TEXT without ANY change or embedding matches this panel. Maximum 1 sentence per panel.
-    2. What hallucination type you observe based on the original categories in the original text, if any. If there are no hallucinations simply output : "No hallucinations detected".
-    3. An analysis between the original text represented by : {text_original} and between the Image Description
-    Output a clear, concise response.
-    """ 
+For each panel, perform the following analysis and output results in the exact format below.
+
+Required Output Format (repeat for every panel) : 
+
+Analysis for panel: <panel_number>
+
+Original Text Match:
+    Copy exactly (verbatim, no changes, no paraphrasing, no embedding) the single sentence from the ORIGINAL TEXT that best corresponds to this panel.
+    Limit: maximum 1 sentence.
+Hallucination Type:
+    Identify the hallucination type based only on the categories present in the original text.
+    If no hallucination is present, output exactly:
+    “No hallucinations detected”
+Analysis:
+    Provide a concise comparison between the ORIGINAL TEXT and the image/panel description, explaining alignment, mismatch, or missing information.
+Rules:
+    - Do not skip any panel.
+    - Each panel must follow the exact format above.
+    - Keep outputs structured and consistent.
+    - Use only information from the provided original text for the “Original Text Match” section.
+    - Do not infer or add information not explicitly supported by the original text.
+            """ 
     
     user_text = st.text_area("Vision analysis instructions", value=text_input)
     file_uploaded = st.file_uploader("Upload a file", type=["png","jpg","jpeg"])
@@ -312,15 +399,46 @@ After this at another section named "Justifications" where you justify and argue
                 
                 rgb_panel = cv.cvtColor(panel, cv.COLOR_GRAY2RGB)
                 pil_panel = Image.fromarray(rgb_panel) 
+                pil_panel_crop = st.session_state.cropped_panels.get(i, pil_panel) 
 
                 col1, col2 = st.columns([1,2]) 
 
                 with col1: 
-                    st.image(pil_panel, "Extracted panel")
+                    if st.session_state.crop_mode.get(i, False) :
+                        preview = st_cropper(
+                            pil_panel,
+                            realtime_update = True, 
+                            aspect_ratio = None, 
+                            key=f"cropper_{i}" 
+                        )
+
+                        c1,c2 = st.columns(2) 
+                        with c1 :
+                            if st.button("Save crop", key  =f"save_crop_false_{i}") :
+                                st.session_state.cropped_panels[i] = preview
+                                st.session_state.crop_mode[i]= False 
+                                st.rerun()  
+                        with c2 :
+                            if st.button("Cancel crop" , key =f"canceled_crop_{i}") : 
+                                st.session_state.crop_mode[i]= False
+                                st.rerun() 
+                    else: 
+                        st.image(pil_panel_crop, "Extracted panel")
+                        crop_coloumn ,reset_crop_coloumn = st.columns(2)
+                        with crop_coloumn : 
+                            if st.button("Crop image", key  =f"save_crop_true_{i}") :
+                                st.session_state.crop_mode[i]= True
+                                st.rerun()  
+                        with reset_crop_coloumn :
+                            if i in st.session_state.cropped_panels : 
+                                if st.button("Cancel crop" , key =f"canceled_crop_{i}") : 
+                                    del st.session_state.cropped_panels[i] 
+                                    st.rerun() 
+                    
                     panel_kept = st.checkbox(f"Panel number {i}", value = True, key = f"Panel_{i}" )
 
                     if panel_kept : 
-                        panels_kept.append((i, pil_panel))
+                        panels_kept.append((i, pil_panel_crop))
 
                 with col2 : 
                     if panel_kept : 
@@ -356,8 +474,6 @@ After this at another section named "Justifications" where you justify and argue
         st.session_state.text_results = text_analysis_result
         st.markdown(text_analysis_result)
 
-    if st.session_state.text_results:
-        st.markdown(st.session_state.text_results)
 
 
     if st.button("AI Comparison") : 
@@ -365,6 +481,7 @@ After this at another section named "Justifications" where you justify and argue
             st.warning("Run the QWEN analysis first!")
         else : 
             comparisons = comparison(st.session_state.panels_kept, st.session_state.analysis_results, comparison_text, text_original)
+            #def comparison(session_panels, embed_text, analysis_text, text_original) : #embed text being the analysis results, idk why I named it that way
             st.markdown("\n".join(comparisons) )
 
 
