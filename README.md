@@ -1,7 +1,6 @@
 # Evaluating Hallucinations in AI-Generated Storyboards for Human-Centered Design
 
-![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![License](https://img.shields.io/badge/license-TBD-lightgrey)
-
+![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![License](https://img.shields.io/badge/license-MIT-green)
 ---
 
 ## Overview
