@@ -13,19 +13,12 @@ import json
 from time import sleep
 from io import BytesIO
 import base64
-import requests
 from streamlit_cropper import st_cropper 
+from google.genai import types
 
 load_dotenv(find_dotenv()) 
-client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-PURDUE_API_KEY = os.getenv("PURDUE_API_KEY") ; 
-URL = "https://genai.rcac.purdue.edu/api/chat/completions"
-
-headers = { 
-    "Authorization": f"Bearer {PURDUE_API_KEY}",
-    "Content-Type": "application/json"
-}
-
+client = genai.Client(api_key=os.environ["GEMINI_API_KEY"]) #Gemini
+#replace this as needed.
 
 device = "cuda" if torch.cuda.is_available() else "cpu" 
 @st.cache_resource #so we load it once and that is it. 
@@ -126,7 +119,7 @@ def vertical_split_sort(panel, image_area, image_y) : #this one is for the cases
     results.append(panel[prev:, :]) 
 
 def split_sort(contours, image):
-    if contours is None : 
+    if not contours : 
         return [] 
     limit = image.shape[0] * 0.01 #0.01 can be changed on a per-image basis.
     bboxes = [cv.boundingRect(c) for c in contours]
@@ -231,79 +224,92 @@ def to_b64(img) :
         st.warning("No image was passed!") 
         return ""
 
-    buffer = BytesIO() #
+    buffer = BytesIO() 
     img.save(buffer, format = "PNG") 
     img_bytes = buffer.getvalue()
     return base64.b64encode(img_bytes).decode("utf-8")
     
-def comparison(session_panels, embed_text, analysis_text, text_original) : #embed text being the analysis results, idk why I named it that way
-    output = []
-    for i in session_panels :
-        idx, img = i
-        img_desc = embed_text.get(idx, "no analysis needed") #get returns the description if using its index key(self-indexed) 
-        
-        #convert to base64
+def gemini_analysis(session_panels) : #embed text being the analysis results, idk why I named it that way
+    output = {} #for storing the results and easily working with them
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
-        base64_image = to_b64(img)
-        if not base64_image:
-            continue
-        body = {
-            "model": "llama4:latest", 
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                f"Panel Index: {idx}\n\n"
-                                f"Prior QWEN Visual Analysis Metadata:\n{img_desc}\n\n"
-                                f"Original Generation Text Script:\n{text_original}"
-                            )
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }
-            ],
-            "system": analysis_text,
-            "stream": False #to get a single block
-        }
-        
-         #Request execution - as per RCAC
-        try:
-            response = requests.post(URL, headers=headers, json=body)
-            
-            if response.status_code == 200:
-                res_data = response.json()
-                analysis_content = res_data["choices"][0]["message"]["content"]
-                output.append(analysis_content)
-            else:
-                error_msg = f"Panel {idx} API Error: Status {response.status_code} - {response.text}"
-                print(error_msg)
-                output.append(error_msg)
-                
-        except Exception as e:
-            output.append(f"Exception raised executing panel {idx}: {str(e)}")
-            
+    for i in session_panels:
+        idx, img = i
+        # Convert PIL image (or path) into bytes
+        if isinstance(img, str):
+            image = Image.open(img)
+        else:
+            image = img
+
+        img_bytes = BytesIO()
+        image.save(img_bytes, format="PNG")
+        img_bytes = img_bytes.getvalue()
+
+        prompt = f"""You are given a panel. For this panel following the following instructions : 
+
+        Text : For the panel create a phrase describing the panel, specifically, what is happening in the image.
+"""
+
+        response = client.models.generate_content (
+            model="gemini-2.5-flash",
+            contents=[
+                prompt,
+                    types.Part.from_bytes(
+            data=img_bytes,
+            mime_type="image/png",
+        ),
+    ],
+        )
+        print(response.text)
+        output[idx] = response.text 
+
     return output
+
+def textcomp(original_text, gemini_results) : 
+
+    for i in gemini_results.items() :
+        
+        instruction = f"""Here is the original text : {original_text} 
+        
+        Here are the analysis results : {gemini_results}
+
+        The original text represents the premise, being the original text used to generate the storyboard. The analysis results are an AI-generat description of a subpanel of the storyboard.
+
+        Treating the original text as the premise, evaluate how the 2 texts match using the following criteria : 
+
+        Match - if the text follows logically as part of the original text, and is consistent with the original text.
+        No match - if the text does not follow logically as part of the original text, and is inconsistent with the original text.
+        Neutral - if the text is neither consistent nor inconsistent with the original text, but rather in between with SOME parts being consistent and some not.
+        """
+        print(f"Analysis for panel number {i} : ") 
+
+        response = client.models.generate_content (
+                model="gemini-2.5-flash",
+                contents=[
+                    instruction,
+        ],
+            )
+        print(response.text)
+    return response 
 
 def main():
     #due to the way Streamlit works, one wants to store everything per run in a cache, else all is lost per rerun.
-    if "analysis_results" not in st.session_state : 
-        st.session_state.analysis_results = {}
     if "text_results" not in st.session_state : 
-        st.session_state.text_results = {} 
+        st.session_state.text_results = [] 
     if "panels_kept" not in st.session_state : 
         st.session_state.panels_kept = [] 
     if "cropped_panels" not in st.session_state : 
         st.session_state.cropped_panels = {} #PIL image
     if "crop_mode" not in st.session_state :
         st.session_state.crop_mode = {} 
+    if "analysis_results" not in st.session_state : 
+        st.session_state.analysis_results = {} 
+    if "trash_bin" not in st.session_state : 
+        st.session_state.trash_bin = {} 
+    if "gem_results" not in st.session_state :
+        st.session_state.gem_results= {} 
+    if "textcomp" not in st.session_state :
+        st.session_state.textcomp = {}
 
     st.set_page_config("wide") 
     st.title("Storyboard Analyzer &  Splitter")
@@ -330,13 +336,7 @@ Output raw valid JSON with no backticks, no markdown and nothing extra added to 
   "Scene_Description": "",
   
 Categories:
-- Object: physical objects or entities you can see in the image
-- Attribute: visual properties like color, size, shape of those objects
-- Number: quantities you can count or read in the image itself
-- Text: any written text physically visible on screen or in the scene
-- Relation: spatial or semantic relationships between visible objects
-- Fact: named entities visible or readable in the image
-- Scene_Description: overall description of what the image shows
+-
 
 After this at another section named "Justifications" where you justify and argue why you gave the answers you gave in relation to the Scene_Description category IN DETAIL. 
     
@@ -348,119 +348,122 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
     "Original text : {text_original}
     "Embedded_Matching_Text": "Rewrite the original text with inline XML tags marking entities using the attributes in {text_input} (e.g., <object>car</object>, <relation>beside</relation>, <attribute>red</attribute>). Do NOT add or change the text in ANY other way than indicated."
     }}
-""" 
- #AI Analysis   
-    comparison_text = f""" You are given an original text and a set of panels to analyze.
-
-Original Text:
-{text_original}
-
-For each panel, perform the following analysis and output results in the exact format below.
-
-Required Output Format (repeat for every panel) : 
-
-Analysis for panel: <panel_number>
-
-Original Text Match:
-    Copy exactly (verbatim, no changes, no paraphrasing, no embedding) the single sentence from the ORIGINAL TEXT that best corresponds to this panel.
-    Limit: maximum 1 sentence.
-Hallucination Type:
-    Identify the hallucination type based only on the categories present in the original text.
-    If no hallucination is present, output exactly:
-    “No hallucinations detected”
-Analysis:
-    Provide a concise comparison between the ORIGINAL TEXT and the image/panel description, explaining alignment, mismatch, or missing information.
-Rules:
-    - Do not skip any panel.
-    - Each panel must follow the exact format above.
-    - Keep outputs structured and consistent.
-    - Use only information from the provided original text for the “Original Text Match” section.
-    - Do not infer or add information not explicitly supported by the original text.
-            """ 
+"""  
     
     user_text = st.text_area("Vision analysis instructions", value=text_input)
-    file_uploaded = st.file_uploader("Upload a file", type=["png","jpg","jpeg"])
-
-    if file_uploaded is not None:
+    file_uploaded = st.file_uploader("Upload a file", type=["png","jpg","jpeg"], accept_multiple_files = True)
+    if file_uploaded:
+        panels = [] 
         st.success("File uploaded successfully!")
 
         with st.spinner("Splitting..."):
-            panels = splitter(file_uploaded) 
-        
+            for img_idx in range(len(file_uploaded)) : 
+                file = file_uploaded[img_idx]
+                panels_uploaded = splitter(file) 
+                for panel in panels_uploaded :
+                    panels.append((img_idx, panel)) 
+
+
         st.text("Choose the panels which you want to keep and be analyzed by QWEN.")
         st.write("Please uncheck the panels you do not wish to keep.") 
 
         panels_kept = []
 
-        for i, panel in enumerate(panels):
-                print(type(panel), panel) 
-                if isinstance(panel, tuple) : 
-                    panel=panel[0]
-                
-                rgb_panel = cv.cvtColor(panel, cv.COLOR_GRAY2RGB)
-                pil_panel = Image.fromarray(rgb_panel) 
-                pil_panel_crop = st.session_state.cropped_panels.get(i, pil_panel) 
+        for panel_idx, (img_idx, panel) in enumerate(panels): 
+            panel_id = f"{img_idx}_{panel_idx}" 
+            if panel_id in st.session_state.trash_bin : 
+                continue 
+            print(type(panel), panel) 
+            if isinstance(panel, tuple) : 
+                panel=panel[0]
+            
+            rgb_panel = cv.cvtColor(panel, cv.COLOR_GRAY2RGB)
+            pil_panel = Image.fromarray(rgb_panel) 
+            pil_panel_crop = st.session_state.cropped_panels.get(panel_id, pil_panel) 
 
-                col1, col2 = st.columns([1,2]) 
+            col1, col2 = st.columns([1,2]) 
 
-                with col1: 
-                    if st.session_state.crop_mode.get(i, False) :
-                        preview = st_cropper(
-                            pil_panel,
-                            realtime_update = True, 
-                            aspect_ratio = None, 
-                            key=f"cropper_{i}" 
-                        )
+            with col1: 
+                if st.session_state.crop_mode.get(panel_id, False) :
+                    preview = st_cropper(
+                        pil_panel,
+                        realtime_update = True, 
+                        aspect_ratio = None, 
+                        key=f"cropper_{panel_id}" 
+                    )
 
-                        c1,c2 = st.columns(2) 
-                        with c1 :
-                            if st.button("Save crop", key  =f"save_crop_false_{i}") :
-                                st.session_state.cropped_panels[i] = preview
-                                st.session_state.crop_mode[i]= False 
-                                st.rerun()  
-                        with c2 :
-                            if st.button("Cancel crop" , key =f"canceled_crop_{i}") : 
-                                st.session_state.crop_mode[i]= False
+                    c1,c2 = st.columns(2) 
+                    with c1 :
+                        if st.button("Save crop", key  =f"save_crop_false_{panel_id}") :
+                            st.session_state.cropped_panels[panel_id] = preview
+                            st.session_state.crop_mode[panel_id]= False 
+                            st.rerun()  
+                    with c2 :
+                        if st.button("Cancel crop" , key =f"canceled_crop_{panel_id}") : 
+                            st.session_state.crop_mode[panel_id]= False
+                            st.rerun() 
+                else: 
+                    st.image(pil_panel_crop, "Extracted panel")
+                    crop_coloumn ,reset_crop_coloumn = st.columns(2)
+                    with crop_coloumn : 
+                        if st.button("Crop image", key  =f"save_crop_true_{panel_id}") :
+                            st.session_state.crop_mode[panel_id]= True
+                            st.rerun()  
+                    with reset_crop_coloumn :
+                        if panel_id in st.session_state.cropped_panels : 
+                            if st.button("Cancel crop" , key =f"canceled_crop_{panel_id}") : 
+                                del st.session_state.cropped_panels[panel_id] 
                                 st.rerun() 
-                    else: 
-                        st.image(pil_panel_crop, "Extracted panel")
-                        crop_coloumn ,reset_crop_coloumn = st.columns(2)
-                        with crop_coloumn : 
-                            if st.button("Crop image", key  =f"save_crop_true_{i}") :
-                                st.session_state.crop_mode[i]= True
-                                st.rerun()  
-                        with reset_crop_coloumn :
-                            if i in st.session_state.cropped_panels : 
-                                if st.button("Cancel crop" , key =f"canceled_crop_{i}") : 
-                                    del st.session_state.cropped_panels[i] 
-                                    st.rerun() 
-                    
-                    panel_kept = st.checkbox(f"Panel number {i}", value = True, key = f"Panel_{i}" )
+                
+                if st.button("Delete panel", key = f"deleted_panel_{panel_id}") : 
+                    st.session_state.trash_bin[panel_id] = {
+                        "img" : st.session_state.cropped_panels.get(panel_id, pil_panel_crop),
+                        "analysis" : st.session_state.analysis_results.get(panel_id)
+                    }
+                    st.session_state.cropped_panels.pop(panel_id, None) #none for error handling, though one should not be able to delete something non-existing.
+                    st.session_state.analysis_results.pop(panel_id, None) 
+                    st.rerun() 
+                
+                
+                panel_kept = st.checkbox(f"Panel number {panel_id}", value = True, key = f"Panel_{panel_id}" )
 
-                    if panel_kept : 
-                        panels_kept.append((i, pil_panel_crop))
+                if panel_kept : 
+                    panels_kept.append((panel_id, pil_panel_crop))
 
-                with col2 : 
-                    if panel_kept : 
-                        if  i in st.session_state.analysis_results : 
-                            st.markdown(st.session_state.analysis_results[i])
-                        st.text("Ready for analysis!") 
-                    else : 
-                        st.text("Panel will not be analyzed.")
+            with col2 : 
+                if panel_kept : 
+                    if  panel_id in st.session_state.analysis_results : 
+                        st.markdown(st.session_state.analysis_results[panel_id])
+                    st.text("Ready for analysis!") 
+                else : 
+                    st.text("Panel will not be analyzed.")
 
-        if st.button("Run QWEN analsysis", type="secondary", key=f"Button_{i}") :
-                for i, pil_panel in panels_kept : 
-                    panel_result = run_qwen(pil_panel, processor, model, user_text) 
-                    if isinstance(panel_result, list) : 
-                        panel_result = panel_result[0] 
-                    panel_result = panel_result.strip().removeprefix("json").strip()
-                    st.session_state.analysis_results[i] = panel_result 
-                    st.success(f"Panel {i} has been sucessfully analyzed!")
-                    st.code(panel_result, language = 'json') #for nice JSON formatting 
-                st.session_state.panels_kept = panels_kept #DELETE LATER if it breaks the code
+        if st.session_state.trash_bin is not None : 
+            with st.expander("Trash bin"): 
+                for panel_id, trash_item in list(st.session_state.trash_bin.items()) : 
+                    st.image(trash_item["img"], f"Analysis : {trash_item["analysis"]}")
+                    if st.button("Restore panel" , key = f"restored_panle_{panel_id}") : 
+                        if panel_id in st.session_state.trash_bin : 
+                            trash_item = st.session_state.trash_bin[panel_id]
+                            st.session_state.cropped_panels[panel_id] = trash_item["img"] 
+                            if trash_item["analysis"] is not None :
+                                st.session_state.analysis_results[panel_id] = trash_item["analysis"] 
+                            del st.session_state.trash_bin[panel_id] 
+                            st.rerun() 
+
+        if st.button("Run QWEN analsysis", type="secondary", key="run_qwen_analysis") :
+            for panel_id, pil_panel in panels_kept : 
+                panel_result = run_qwen(pil_panel, processor, model, user_text) 
+                if isinstance(panel_result, list) : 
+                    panel_result = panel_result[0] 
+                panel_result = panel_result.strip().removeprefix("json").strip()
+                st.session_state.analysis_results[panel_id] = panel_result 
+                st.success(f"Panel {panel_id} has been sucessfully analyzed!")
+                st.code(panel_result, language = 'json') #for nice JSON formatting 
+            st.session_state.panels_kept = panels_kept #DELETE LATER if it breaks the code
 
         if st.button("Export to JSON") :
-            if st.session_state.panels_kept is None : 
+            if not st.session_state.panels_kept : 
                 st.warning("Run the analysis first!")
             with open("results.json" , "w") as f : 
                 json.dump(
@@ -475,15 +478,25 @@ Rules:
         st.markdown(text_analysis_result)
 
 
-
-    if st.button("AI Comparison") : 
+    if st.button("Generate Panel Descriptions") : 
         if not st.session_state.analysis_results:
             st.warning("Run the QWEN analysis first!")
         else : 
-            comparisons = comparison(st.session_state.panels_kept, st.session_state.analysis_results, comparison_text, text_original)
+            generated_descriptions = gemini_analysis(st.session_state.panels_kept)
             #def comparison(session_panels, embed_text, analysis_text, text_original) : #embed text being the analysis results, idk why I named it that way
-            st.markdown("\n".join(comparisons) )
+            st.markdown("\n".join(generated_descriptions.values()) )
+            st.session_state.gem_results.update(generated_descriptions) 
+            print(type(st.session_state.analysis_results))
+            print(st.session_state.analysis_results) 
 
+    if st.button("Text comparisons") : 
+        if not st.session_state.gem_results : 
+            st.warning("Run the text analysis first!") 
+        else : 
+            st.session_state.textcomp = textcomp(text_original, st.session_state.gem_results) 
+
+        if st.session_state.textcomp:
+            st.markdown(" ".join(st.session_state.textcomp))  
 
 if __name__ == "__main__":
     main()
