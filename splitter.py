@@ -5,7 +5,7 @@ import cv2 as cv
 import numpy as np 
 from dotenv import find_dotenv, load_dotenv
 import torch 
-from transformers import pipeline, AutoProcessor, AutoModelForImageTextToText
+from transformers import AutoProcessor, AutoModelForImageTextToText
 from qwen_vl_utils import process_vision_info
 from google import genai
 import os
@@ -15,6 +15,8 @@ from io import BytesIO
 import base64
 from streamlit_cropper import st_cropper 
 from google.genai import types
+from summac.model_summac import SummaCConv #the authors reccomend this one instead of SummaCZS
+from streamlit_sortables import sort_items
 
 load_dotenv(find_dotenv()) 
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"]) #Gemini
@@ -267,11 +269,13 @@ def gemini_analysis(session_panels) : #embed text being the analysis results, id
 
 def textcomp(original_text, gemini_results) : 
 
-    for i in gemini_results.items() :
+    responses = []
+
+    for i, description in gemini_results.items() : 
         
         instruction = f"""Here is the original text : {original_text} 
         
-        Here are the analysis results : {gemini_results}
+        Here are the analysis results : {description}
 
         The original text represents the premise, being the original text used to generate the storyboard. The analysis results are an AI-generat description of a subpanel of the storyboard.
 
@@ -290,7 +294,19 @@ def textcomp(original_text, gemini_results) :
         ],
             )
         print(response.text)
-    return response 
+        responses.append(response.text) 
+    return responses
+
+def summac(original_text, gemini_results) : 
+    model_conv = SummaCConv(models=["vitc"], bins='percentile', granularity="sentence", nli_labels="e", device="cpu", start_file="default", agg="mean") 
+
+    initial_text = original_text
+    for i, description in gemini_results.items() : 
+
+        gemini_text = description  
+
+    summac_score = model_conv.score([initial_text], [description]) #unpack gemini results
+    return summac_score 
 
 def main():
     #due to the way Streamlit works, one wants to store everything per run in a cache, else all is lost per rerun.
@@ -310,15 +326,21 @@ def main():
         st.session_state.gem_results= {} 
     if "textcomp" not in st.session_state :
         st.session_state.textcomp = {}
+    if "summac_results" not in st.session_state :
+        st.session_state.summac_results = [] 
+    if "manual_crops" not in st.session_state :
+        st.session_state.manual_crops = {} 
+    if "manual_crop_mode" not in st.session_state : 
+        st.session_state. manual_crop_mode=  {} 
+    if "panels_order" not in st.session_state: 
+        st.session_state.panels_order = []
 
-    st.set_page_config("wide") 
+    st.set_page_config("Splitter & Storyboard Analyzer", layout = "wide") 
     st.title("Storyboard Analyzer &  Splitter")
     st.text("Upload an image to be split in different parts")
     model, processor = load_model() 
 
-    comparisons = []
-
-    text_original = st.text_area("Please input the text used to generate the storyboard for analysis.", placeholder = "Input the original text here." ) 
+    text_original = st.text_area("Original vignette text.", placeholder = "Paste the original vignette or scenario here." ) 
 
 #QWEN instructions
     text_input = f"""You are analysing a single sub-panel of a storyboard image.
@@ -369,79 +391,139 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
 
         panels_kept = []
 
-        for panel_idx, (img_idx, panel) in enumerate(panels): 
-            panel_id = f"{img_idx}_{panel_idx}" 
-            if panel_id in st.session_state.trash_bin : 
-                continue 
-            print(type(panel), panel) 
-            if isinstance(panel, tuple) : 
-                panel=panel[0]
+        #manual crop section 
+        for img_idx, file in enumerate(file_uploaded) : #go through all files and put the counter back in the beginnig of the file, as .read() moves it to the end
+            file.seek(0)
+            original_image = Image.open(file).convert("RGB")  
+            st.image(original_image, caption  = "Original uploaded file")
             
-            rgb_panel = cv.cvtColor(panel, cv.COLOR_GRAY2RGB)
-            pil_panel = Image.fromarray(rgb_panel) 
-            pil_panel_crop = st.session_state.cropped_panels.get(panel_id, pil_panel) 
-
-            col1, col2 = st.columns([1,2]) 
-
-            with col1: 
-                if st.session_state.crop_mode.get(panel_id, False) :
-                    preview = st_cropper(
-                        pil_panel,
+            if st.session_state.manual_crop_mode.get(img_idx, False) :
+                preview = st_cropper(
+                        original_image,
                         realtime_update = True, 
                         aspect_ratio = None, 
-                        key=f"cropper_{panel_id}" 
+                        key=f"manual_crops_{img_idx}" 
                     )
-
-                    c1,c2 = st.columns(2) 
-                    with c1 :
-                        if st.button("Save crop", key  =f"save_crop_false_{panel_id}") :
-                            st.session_state.cropped_panels[panel_id] = preview
-                            st.session_state.crop_mode[panel_id]= False 
-                            st.rerun()  
-                    with c2 :
-                        if st.button("Cancel crop" , key =f"canceled_crop_{panel_id}") : 
-                            st.session_state.crop_mode[panel_id]= False
+                c1_1, c2_1 = st.columns(2)
+            
+                with c1_1 : 
+                        if st.button("Save crop", key = f"save_manual_crop_{img_idx}") : 
+                            manual_id_cropped = f"{img_idx}_manual_crop_{len(st.session_state.manual_crops)}"
+                            st.session_state.manual_crops[manual_id_cropped] = preview
+                            st.session_state.manual_crop_mode[img_idx] = False
                             st.rerun() 
-                else: 
-                    st.image(pil_panel_crop, "Extracted panel")
-                    crop_coloumn ,reset_crop_coloumn = st.columns(2)
-                    with crop_coloumn : 
-                        if st.button("Crop image", key  =f"save_crop_true_{panel_id}") :
-                            st.session_state.crop_mode[panel_id]= True
-                            st.rerun()  
-                    with reset_crop_coloumn :
-                        if panel_id in st.session_state.cropped_panels : 
+                            
+                with c2_1 : 
+                    
+                        if st.button("Cancel crop", key = f"cancel_manual_crop_{img_idx}") : 
+                            st.session_state.manual_crop_mode[img_idx] = False
+                            st.rerun()
+            
+            else: 
+                manual_crop_coloumn ,reset_manual_crop_coloumn = st.columns(2)
+                with manual_crop_coloumn : 
+                    if st.button("Crop image", key  =f"save_crop_true_{img_idx}") :
+                        st.session_state.manual_crop_mode[img_idx]= True
+                        st.rerun()  
+                with reset_manual_crop_coloumn :
+                    if img_idx in st.session_state.manual_crops : 
+                        if st.button("Cancel crop" , key =f"canceled_crop_{img_idx}") : 
+                            del st.session_state.manual_crops[img_idx] 
+                            st.rerun() 
+
+        #automatic crop section
+        with st.expander("Extracted panels", expanded  = True) :
+            if st.session_state.manual_crops is not None : 
+                for panel_id, pil_panel in st.session_state.manual_crops.items() : 
+                    st.image(pil_panel, f"Manual crop {panel_id}")
+                    width, height = pil_panel.size
+                    st.text(f"Panel size : {width} x {height} pixels")
+                    if st.button("Delete manual crop", key = f"deleted_manual_crop_{panel_id}") : 
+                        st.session_state.trash_bin[panel_id] = {
+                            "img"  : st.session_state.manual_crops.get(panel_id, pil_panel),
+                            "analysis" : st.session_state.analysis_results.get(panel_id)
+                        } 
+                        del st.session_state.manual_crops[panel_id] 
+                        st.session_state.manual_crops.pop(panel_id, None) 
+                        st.session_state.analysis_results.pop(panel_id, None)
+                        st.rerun()
+
+            for panel_idx, (img_idx, panel) in enumerate(panels): 
+                panel_id = f"{img_idx}_{panel_idx}" 
+                if panel_id in st.session_state.trash_bin : 
+                    continue 
+                print(type(panel), panel) 
+                if isinstance(panel, tuple) : 
+                    panel=panel[0]
+                
+                rgb_panel = cv.cvtColor(panel, cv.COLOR_GRAY2RGB)
+                pil_panel = Image.fromarray(rgb_panel) 
+                pil_panel_crop = st.session_state.cropped_panels.get(panel_id, pil_panel) 
+
+                col1, col2 = st.columns([1,2]) 
+
+                with col1: 
+                    if st.session_state.crop_mode.get(panel_id, False) :
+                        preview = st_cropper(
+                            pil_panel,
+                            realtime_update = True, 
+                            aspect_ratio = None, 
+                            key=f"cropper_{panel_id}" 
+                        )
+
+                        c1,c2 = st.columns(2) 
+                        with c1 :
+                            if st.button("Save crop", key  =f"save_crop_false_{panel_id}") :
+                                st.session_state.cropped_panels[panel_id] = preview
+                                st.session_state.crop_mode[panel_id]= False 
+                                st.rerun()  
+                        with c2 :
                             if st.button("Cancel crop" , key =f"canceled_crop_{panel_id}") : 
-                                del st.session_state.cropped_panels[panel_id] 
+                                st.session_state.crop_mode[panel_id]= False
                                 st.rerun() 
-                
-                if st.button("Delete panel", key = f"deleted_panel_{panel_id}") : 
-                    st.session_state.trash_bin[panel_id] = {
-                        "img" : st.session_state.cropped_panels.get(panel_id, pil_panel_crop),
-                        "analysis" : st.session_state.analysis_results.get(panel_id)
-                    }
-                    st.session_state.cropped_panels.pop(panel_id, None) #none for error handling, though one should not be able to delete something non-existing.
-                    st.session_state.analysis_results.pop(panel_id, None) 
-                    st.rerun() 
-                
-                
-                panel_kept = st.checkbox(f"Panel number {panel_id}", value = True, key = f"Panel_{panel_id}" )
+                    else: 
+                        st.image(pil_panel_crop, "Extracted panel")
+                        width, height = pil_panel_crop.size
+                        st.text(f"Panel size : {width} x {height} pixels")
+                        crop_coloumn ,reset_crop_coloumn = st.columns(2)
+                        with crop_coloumn : 
+                            if st.button("Crop image", key  =f"save_crop_true_{panel_id}") :
+                                st.session_state.crop_mode[panel_id]= True
+                                st.rerun()  
+                        with reset_crop_coloumn :
+                            if panel_id in st.session_state.cropped_panels : 
+                                if st.button("Cancel crop" , key =f"canceled_crop_{panel_id}") : 
+                                    del st.session_state.cropped_panels[panel_id] 
+                                    st.rerun() 
+                    
+                    if st.button("Delete panel", key = f"deleted_panel_{panel_id}") : 
+                        st.session_state.trash_bin[panel_id] = {
+                            "img" : st.session_state.cropped_panels.get(panel_id, pil_panel_crop),
+                            "analysis" : st.session_state.analysis_results.get(panel_id)
+                        }
+                        st.session_state.cropped_panels.pop(panel_id, None) #none for error handling, though one should not be able to delete something non-existing.
+                        st.session_state.analysis_results.pop(panel_id, None) 
+                        st.rerun() 
+                    
+                    
+                    panel_kept = st.checkbox(f"Panel number {panel_id}", value = True, key = f"Panel_{panel_id}" )
+                    if panel_kept : 
+                        panels_kept.append((panel_id, pil_panel_crop))
+                        for panel_id in st.session_state.manual_crops :
+                            panels_kept.append(st.session_state.manual_crops.get(panel_id)) #add the manual crops to the panels kept
 
-                if panel_kept : 
-                    panels_kept.append((panel_id, pil_panel_crop))
-
-            with col2 : 
-                if panel_kept : 
-                    if  panel_id in st.session_state.analysis_results : 
-                        st.markdown(st.session_state.analysis_results[panel_id])
-                    st.text("Ready for analysis!") 
-                else : 
-                    st.text("Panel will not be analyzed.")
-
+                with col2 : 
+                    if panel_kept : 
+                        if  panel_id in st.session_state.analysis_results : 
+                            st.markdown(st.session_state.analysis_results[panel_id])
+                        st.text("Ready for analysis!") 
+                    else : 
+                        st.text("Panel will not be analyzed.")
+                    
         if st.session_state.trash_bin is not None : 
             with st.expander("Trash bin"): 
                 for panel_id, trash_item in list(st.session_state.trash_bin.items()) : 
-                    st.image(trash_item["img"], f"Analysis : {trash_item["analysis"]}")
+                    st.image(trash_item["img"], f"Analysis : {trash_item['analysis']}") 
                     if st.button("Restore panel" , key = f"restored_panle_{panel_id}") : 
                         if panel_id in st.session_state.trash_bin : 
                             trash_item = st.session_state.trash_bin[panel_id]
@@ -450,7 +532,8 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                                 st.session_state.analysis_results[panel_id] = trash_item["analysis"] 
                             del st.session_state.trash_bin[panel_id] 
                             st.rerun() 
-
+            
+        
         if st.button("Run QWEN analsysis", type="secondary", key="run_qwen_analysis") :
             for panel_id, pil_panel in panels_kept : 
                 panel_result = run_qwen(pil_panel, processor, model, user_text) 
@@ -460,7 +543,7 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                 st.session_state.analysis_results[panel_id] = panel_result 
                 st.success(f"Panel {panel_id} has been sucessfully analyzed!")
                 st.code(panel_result, language = 'json') #for nice JSON formatting 
-            st.session_state.panels_kept = panels_kept #DELETE LATER if it breaks the code
+            st.session_state.panels_kept = panels_kept 
 
         if st.button("Export to JSON") :
             if not st.session_state.panels_kept : 
@@ -479,24 +562,31 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
 
 
     if st.button("Generate Panel Descriptions") : 
-        if not st.session_state.analysis_results:
-            st.warning("Run the QWEN analysis first!")
-        else : 
-            generated_descriptions = gemini_analysis(st.session_state.panels_kept)
-            #def comparison(session_panels, embed_text, analysis_text, text_original) : #embed text being the analysis results, idk why I named it that way
-            st.markdown("\n".join(generated_descriptions.values()) )
-            st.session_state.gem_results.update(generated_descriptions) 
-            print(type(st.session_state.analysis_results))
-            print(st.session_state.analysis_results) 
+        with st.expander("Generated panel descriptions", expanded = True) : 
+            if not st.session_state.analysis_results:
+                st.warning("Run the QWEN analysis first!")
+            else : 
+                generated_descriptions = gemini_analysis(st.session_state.panels_kept)
+                st.markdown("\n".join(generated_descriptions.values()) )
+                st.session_state.gem_results.update(generated_descriptions) 
+                print(st.session_state.analysis_results) 
 
-    if st.button("Text comparisons") : 
+    if st.button("Run LLMaaJ entailment analysis") : 
         if not st.session_state.gem_results : 
             st.warning("Run the text analysis first!") 
         else : 
             st.session_state.textcomp = textcomp(text_original, st.session_state.gem_results) 
+            st.session_state.textcomp.update({i: instruction for i, instruction in st.session_state.gem_results.items()})
 
         if st.session_state.textcomp:
             st.markdown(" ".join(st.session_state.textcomp))  
+
+    if st.button("Run SummaC Analysis") :
+        if not st.session_state.gem_results : 
+            st.warning("Generate a panel description first.")
+        else :
+            analysis = summac(text_original, st.session_state.gem_results) 
+            st.session_state.summac_results.append(analysis)
 
 if __name__ == "__main__":
     main()
