@@ -67,7 +67,7 @@ streamlit run main.py
 
 ---
 
-## Function Reference
+## Function references for those who wish to edit the code
 
 ### `load_model()`
 
