@@ -17,6 +17,8 @@ from streamlit_cropper import st_cropper
 from google.genai import types
 from summac.model_summac import SummaCConv #the authors reccomend this one instead of SummaCZS
 from streamlit_sortables import sort_items
+import subprocess 
+
 
 load_dotenv(find_dotenv()) 
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"]) #Gemini
@@ -231,12 +233,11 @@ def to_b64(img) :
     img_bytes = buffer.getvalue()
     return base64.b64encode(img_bytes).decode("utf-8")
     
-def gemini_analysis(session_panels) : #embed text being the analysis results, idk why I named it that way
+def gemini_analysis(session_panels) : 
     output = {} #for storing the results and easily working with them
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
-    for i in session_panels:
-        idx, img = i
+    for panel_id, img in session_panels:
         # Convert PIL image (or path) into bytes
         if isinstance(img, str):
             image = Image.open(img)
@@ -249,8 +250,7 @@ def gemini_analysis(session_panels) : #embed text being the analysis results, id
 
         prompt = f"""You are given a panel. For this panel following the following instructions : 
 
-        Text : For the panel create a phrase describing the panel, specifically, what is happening in the image.
-"""
+        Text : For the panel create a phrase describing the panel, specifically, what is happening in the image."""
 
         response = client.models.generate_content (
             model="gemini-2.5-flash",
@@ -263,15 +263,13 @@ def gemini_analysis(session_panels) : #embed text being the analysis results, id
     ],
         )
         print(response.text)
-        output[idx] = response.text 
+        output[panel_id] = response.text 
 
     return output
 
 def textcomp(original_text, gemini_results) : 
-
-    responses = []
-
-    for i, description in gemini_results.items() : 
+    responses = {}
+    for panel_id, description in gemini_results.items() : 
         
         instruction = f"""Here is the original text : {original_text} 
         
@@ -279,13 +277,15 @@ def textcomp(original_text, gemini_results) :
 
         The original text represents the premise, being the original text used to generate the storyboard. The analysis results are an AI-generat description of a subpanel of the storyboard.
 
+        IMPORTANT: BEFORE judging, check the original text for any caveats, exceptions, or conditional statements (e.g. "sometimes X happens," "in some cases," "not always", "sometimes bad, sometimes good"). If the original text explicitly allows for variation or failure modes, a panel depicting that variation or failure should NOT be judged as a mismatch, even if it doesn't match the primary/happy-path description, but rather as a match, as it helps reach the final goal.
+
         Treating the original text as the premise, evaluate how the 2 texts match using the following criteria : 
 
         Match - if the text follows logically as part of the original text, and is consistent with the original text.
         No match - if the text does not follow logically as part of the original text, and is inconsistent with the original text.
         Neutral - if the text is neither consistent nor inconsistent with the original text, but rather in between with SOME parts being consistent and some not.
         """
-        print(f"Analysis for panel number {i} : ") 
+        print(f"Analysis for panel number {panel_id} : ") 
 
         response = client.models.generate_content (
                 model="gemini-2.5-flash",
@@ -294,22 +294,100 @@ def textcomp(original_text, gemini_results) :
         ],
             )
         print(response.text)
-        responses.append(response.text) 
+        responses[panel_id] = response.text
     return responses
 
 def summac(original_text, gemini_results) : 
-    model_conv = SummaCConv(models=["vitc"], bins='percentile', granularity="sentence", nli_labels="e", device="cpu", start_file="default", agg="mean") 
+    #print("[DEBUG] SummaC button clicked, gem_results has", len(st.session_state.gem_results), "entries")
+    scores =  {} 
+    for panel_id, description in gemini_results.items() : 
+        payload = json.dumps({"original_text" : original_text, "description" : description})
+        try : 
+            result = subprocess.run(
+                [r"C:\Users\markt\scoop\apps\miniconda3\current\envs\summac_env\python.exe",r"C:\Users\markt\coint\sumc.py"],
+                input=payload, #stdin 
+                capture_output = True, #so stdout is in the variable we control and not directly printed to terminal
+                text= True,
+            # timeout = 90 #give the NLI model time to load
+            )
+        
+        except subprocess.TimeoutExpired :
+            print("Timeout for panel : {panel_id} ")
+            scores[panel_id] = None
+            continue
+        stdout = result.stdout
+        stderr = result.stderr 
+        if result.returncode != 0 : 
+            print("SummaC had errors!")
+            scores[panel_id] = None
+            continue
+        #the output format here is this way to avoid the errors of stdout processing all the info
+        for line in stdout.splitlines() :
+            if line.startswith("SummaC result"):
+                output = json.loads(line[len("SummaC result") :] )
+        scores[panel_id] = output["score"] #the variable within  output[] must match the name from the summac.py file
+    return scores 
 
-    initial_text = original_text
-    for i, description in gemini_results.items() : 
+def hallucination(llmaaj, summac, qwen, original_text, gemini_desc, storyboard_panels, panel_id):
+    """
+    storyboard_panels: dict of {panel_id: PIL image} — the full sequence, for narrative context
+    panel_id: the ID of the panel currently being judged, so we know which one to flag as the subject
+    """
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
-        gemini_text = description  
+    def to_bytes(img):
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
 
-    summac_score = model_conv.score([initial_text], [description]) #unpack gemini results
-    return summac_score 
+    ordered_ids = sorted(storyboard_panels.keys())
+    sequence_parts = []
+    for pid in ordered_ids:
+        marker = f"[PANEL {pid}]" + ("is the panel being judged currently." if pid == panel_id else "")
+        sequence_parts.append(marker)
+        sequence_parts.append(types.Part.from_bytes(data=to_bytes(storyboard_panels[pid]), mime_type="image/png"))
+
+    prompt = f"""You are a hallucination detector for one specific panel within a full storyboard sequence.
+
+You are given the FULL storyboard (all panels, in order) for narrative context, plus these signals specifically about the panel marked "THIS IS THE PANEL BEING JUDGED":
+
+Original text : {original_text}
+Panel description : {gemini_desc}
+QWEN analysis : {qwen}
+LLM-as-a-Judge entailment verdict : {llmaaj}
+SummaC score : {summac}
+
+Using the full storyboard sequence as narrative context, judge ONLY the marked panel. A panel that deviates from the "happy path" description in the original text is NOT automatically a hallucination if the original text allows for exceptions, variation, or alternate outcomes — check the full original text carefully for such caveats before flagging.
+
+Return ONLY valid JSON, no markdown, no backticks, in this exact shape:
+{{
+  "issues": [
+    {{
+      "category": "Object" | "Attribute" | "Relation" | "Text" | "Scene_Description" | "Other",
+      "title": "short 5-8 word summary",
+      "explanation": "why this was flagged, referencing the image and/or narrative context",
+      "confidence": 0.0 to 1.0
+    }}
+  ]
+}}
+
+If there are no hallucinations, return {{"issues": []}}.
+"""
+
+    contents = [prompt] + sequence_parts
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=contents,
+    )
+    raw = response.text.strip().removeprefix("```json").removesuffix("```").strip()
+    try:
+        parsed = json.loads(raw)
+        return parsed.get("issues", [])
+    except json.JSONDecodeError:
+        return [{"category": "Other", "title": "Parse error", "explanation": raw, "confidence": None}]
 
 def main():
-    #due to the way Streamlit works, one wants to store everything per run in a cache, else all is lost per rerun.
     if "text_results" not in st.session_state : 
         st.session_state.text_results = [] 
     if "panels_kept" not in st.session_state : 
@@ -327,13 +405,19 @@ def main():
     if "textcomp" not in st.session_state :
         st.session_state.textcomp = {}
     if "summac_results" not in st.session_state :
-        st.session_state.summac_results = [] 
+        st.session_state.summac_results = {}  
     if "manual_crops" not in st.session_state :
         st.session_state.manual_crops = {} 
     if "manual_crop_mode" not in st.session_state : 
         st.session_state. manual_crop_mode=  {} 
     if "panels_order" not in st.session_state: 
         st.session_state.panels_order = []
+    if "hallucinations" not in st.session_state : 
+        st.session_state.hallucinations = {} 
+    if "manual_notes" not in st.session_state : 
+        st.session_state.manual_notes = {} 
+    if "editing_notes" not in st.session_state :
+        st.session_state.editing_notes= {} 
 
     st.set_page_config("Splitter & Storyboard Analyzer", layout = "wide") 
     st.title("Storyboard Analyzer &  Splitter")
@@ -374,6 +458,7 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
     
     user_text = st.text_area("Vision analysis instructions", value=text_input)
     file_uploaded = st.file_uploader("Upload a file", type=["png","jpg","jpeg"], accept_multiple_files = True)
+    
     if file_uploaded:
         panels = [] 
         st.success("File uploaded successfully!")
@@ -384,7 +469,7 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                 panels_uploaded = splitter(file) 
                 for panel in panels_uploaded :
                     panels.append((img_idx, panel)) 
-
+    
 
         st.text("Choose the panels which you want to keep and be analyzed by QWEN.")
         st.write("Please uncheck the panels you do not wish to keep.") 
@@ -445,7 +530,7 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                         } 
                         del st.session_state.manual_crops[panel_id] 
                         st.session_state.manual_crops.pop(panel_id, None) 
-                        st.session_state.analysis_results.pop(panel_id, None)
+                        st.session_state.analysis_results.pop(panel_id, None)   
                         st.rerun()
 
             for panel_idx, (img_idx, panel) in enumerate(panels): 
@@ -509,16 +594,18 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                     panel_kept = st.checkbox(f"Panel number {panel_id}", value = True, key = f"Panel_{panel_id}" )
                     if panel_kept : 
                         panels_kept.append((panel_id, pil_panel_crop))
-                        for panel_id in st.session_state.manual_crops :
-                            panels_kept.append(st.session_state.manual_crops.get(panel_id)) #add the manual crops to the panels kept
-
+                    
                 with col2 : 
-                    if panel_kept : 
+                    if panel_kept: 
                         if  panel_id in st.session_state.analysis_results : 
-                            st.markdown(st.session_state.analysis_results[panel_id])
+                            st.markdown(st.session_state.analysis_results[panel_id]) 
                         st.text("Ready for analysis!") 
                     else : 
                         st.text("Panel will not be analyzed.")
+                        
+            for man_id, man_img in st.session_state.manual_crops.items() :
+                            panels_kept.append((man_id, man_img)) #add the manual crops to the panels kept
+
                     
         if st.session_state.trash_bin is not None : 
             with st.expander("Trash bin"): 
@@ -535,23 +622,31 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
             
         
         if st.button("Run QWEN analsysis", type="secondary", key="run_qwen_analysis") :
+            st.spinner("Analyzing panels...")
+            counter = 0
             for panel_id, pil_panel in panels_kept : 
+                counter+=1 
                 panel_result = run_qwen(pil_panel, processor, model, user_text) 
                 if isinstance(panel_result, list) : 
                     panel_result = panel_result[0] 
-                panel_result = panel_result.strip().removeprefix("json").strip()
+                description = panel_result.text.strip()
+                description = description.removeprefix("```json").removeprefix("```").strip()
+                description = description.removesuffix("```").strip()
+
                 st.session_state.analysis_results[panel_id] = panel_result 
                 st.success(f"Panel {panel_id} has been sucessfully analyzed!")
                 st.code(panel_result, language = 'json') #for nice JSON formatting 
             st.session_state.panels_kept = panels_kept 
+            st.text(f"Number of panals analyzed : {counter}")
 
         if st.button("Export to JSON") :
             if not st.session_state.panels_kept : 
                 st.warning("Run the analysis first!")
-            with open("results.json" , "w") as f : 
-                json.dump(
-                    st.session_state.analysis_results, f, indent = 4
-                )
+            else :
+                with open("results.json" , "w") as f : 
+                    json.dump(
+                        st.session_state.analysis_results, f, indent = 4   
+                    )
             st.success("Succesfully exported to a JSON file!") 
     
     
@@ -562,31 +657,76 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
 
 
     if st.button("Generate Panel Descriptions") : 
-        with st.expander("Generated panel descriptions", expanded = True) : 
-            if not st.session_state.analysis_results:
-                st.warning("Run the QWEN analysis first!")
-            else : 
-                generated_descriptions = gemini_analysis(st.session_state.panels_kept)
-                st.markdown("\n".join(generated_descriptions.values()) )
-                st.session_state.gem_results.update(generated_descriptions) 
-                print(st.session_state.analysis_results) 
+        generated_descriptions = gemini_analysis(panels_kept)
+        st.session_state.gem_results.update(generated_descriptions)
+        
+    with st.expander("Generated panel descriptions", expanded = True) : 
+        generated_descriptions = gemini_analysis(panels_kept)
+        st.markdown("\n\n".join(generated_descriptions.values()) ) #markdown requies \n\n
+        st.session_state.gem_results.update(generated_descriptions) 
+        print(st.session_state.analysis_results) 
 
     if st.button("Run LLMaaJ entailment analysis") : 
         if not st.session_state.gem_results : 
-            st.warning("Run the text analysis first!") 
+            st.warning("Run the text analysis first!")  
         else : 
             st.session_state.textcomp = textcomp(text_original, st.session_state.gem_results) 
-            st.session_state.textcomp.update({i: instruction for i, instruction in st.session_state.gem_results.items()})
-
+            
         if st.session_state.textcomp:
-            st.markdown(" ".join(st.session_state.textcomp))  
-
+            for panel_id, verdict in st.session_state.textcomp.items() : 
+                st.markdown(f"Panel : {panel_id}  : {verdict}")
+                
     if st.button("Run SummaC Analysis") :
         if not st.session_state.gem_results : 
             st.warning("Generate a panel description first.")
         else :
             analysis = summac(text_original, st.session_state.gem_results) 
-            st.session_state.summac_results.append(analysis)
+            st.session_state.summac_results = analysis #summac already returns a dictionary
+            st.write(st.session_state.summac_results)
+            F
+        if st.session_state.summac_results :
+            for panel_id , description in st.session_state.summac_results.items() :
+                print(f"SummaC analysis for panel {panel_id} : {description}")
+            
+    if st.button("Check hallucinations") : 
+        if not st.session_state.analysis_results : 
+            st.warning("Run the QWEN analysis first.")
+        elif not st.session_state.gem_results : 
+            st.warning("Generate a panel description first.")
+        elif not st.session_state.textcomp : 
+            st.warning("Run the entailment analysis first.")
+        elif not st.session_state.summac :
+            st.warning("Run the SummaC analysis first.")
+        else : 
+            for panel_id, panel_img in panels_kept:
+                qwen_output = st.session_state.analysis_results.get(panel_id)
+                gemini_description = st.session_state.gem_results.get(panel_id)
+                entailment_verdict = st.session_state.textcomp.get(panel_id)
+                summac_score = st.session_state.summac_results.get(panel_id)
 
+                result = hallucination(
+                    panel_img,
+                    entailment_verdict,
+                    summac_score,
+                    qwen_output,
+                    text_original,
+                    gemini_description,
+                    panels_kept,   
+                    panel_id            
+                )
+                st.session_state.hallucinations[panel_id] = result
+                st.markdown(f"**Panel {panel_id}:**")
+                st.markdown(result)
+                
+    """automated_a , manual_a = st.coloumsn(2) 
+    with automated_a : 
+        editing_a  = st.session_state.editing_notes.get(panel_id, False) 
+        if editing_a : 
+            draft = st.text_area(
+                "Automated Analysis Results",
+                value = st.session_state.hallucinations.get(panel_id, False) 
+                key = f"automated_edit_{panel_id}" 
+            )
+    """ 
 if __name__ == "__main__":
     main()
