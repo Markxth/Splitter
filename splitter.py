@@ -636,11 +636,11 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                 panel_result = run_qwen(pil_panel, processor, model, user_text) 
                 if isinstance(panel_result, list) : 
                     panel_result = panel_result[0] 
-                description = panel_result.text.strip()
+                description = panel_result.strip()
                 description = description.removeprefix("```json").removeprefix("```").strip()
                 description = description.removesuffix("```").strip()
 
-                st.session_state.analysis_results[panel_id] = panel_result 
+                st.session_state.analysis_results[panel_id] = description 
                 st.success(f"Panel {panel_id} has been sucessfully analyzed!")
                 st.code(panel_result, language = 'json') #for nice JSON formatting 
             st.session_state.panels_kept = panels_kept 
@@ -667,11 +667,11 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
         generated_descriptions = gemini_analysis(panels_kept)
         st.session_state.gem_results.update(generated_descriptions)
         
-    with st.expander("Generated panel descriptions", expanded = True) : 
-        generated_descriptions = gemini_analysis(panels_kept)
-        st.markdown("\n\n".join(generated_descriptions.values()) ) #markdown requies \n\n
-        st.session_state.gem_results.update(generated_descriptions) 
-        print(st.session_state.analysis_results) 
+        with st.expander("Generated panel descriptions", expanded = True) : 
+            generated_descriptions = gemini_analysis(panels_kept)
+            st.markdown("\n\n".join(generated_descriptions.values()) ) #markdown requies \n\n
+            st.session_state.gem_results.update(generated_descriptions) 
+            print(st.session_state.analysis_results) 
 
     if st.button("Run LLMaaJ entailment analysis") : 
         if not st.session_state.gem_results : 
