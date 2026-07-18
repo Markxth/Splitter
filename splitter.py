@@ -416,9 +416,15 @@ def main():
         st.session_state.hallucinations = {} 
     if "manual_notes" not in st.session_state : 
         st.session_state.manual_notes = {} 
-    if "editing_notes" not in st.session_state :
+    if "editing_notes" not in st.session_state : #automated hallucination = bool 
         st.session_state.editing_notes= {} 
-
+    if "hallucination_out" not in st.session_state :  #for saving automated 
+        st.session_state.hallucination_out  = {} 
+    if "manual_note_edit" not in st.session_state : #manual hallucination   
+        st.session_state.manual_note_edit = {}
+    if "editing_manual" not in st.session_state: #for manual hallucination editing - bool 
+        st.session_state.editing_manual = {} 
+        
     st.set_page_config("Splitter & Storyboard Analyzer", layout = "wide") 
     st.title("Storyboard Analyzer &  Splitter")
     st.text("Upload an image to be split in different parts")
@@ -604,9 +610,10 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                         st.text("Panel will not be analyzed.")
                         
             for man_id, man_img in st.session_state.manual_crops.items() :
-                            panels_kept.append((man_id, man_img)) #add the manual crops to the panels kept
+                panels_kept.append((man_id, man_img)) #add the manual crops to the panels kept
 
-                    
+            st.session_state.panels_kept = panels_kept
+                
         if st.session_state.trash_bin is not None : 
             with st.expander("Trash bin"): 
                 for panel_id, trash_item in list(st.session_state.trash_bin.items()) : 
@@ -717,16 +724,102 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                 st.session_state.hallucinations[panel_id] = result
                 st.markdown(f"**Panel {panel_id}:**")
                 st.markdown(result)
-                
-    """automated_a , manual_a = st.coloumsn(2) 
-    with automated_a : 
-        editing_a  = st.session_state.editing_notes.get(panel_id, False) 
-        if editing_a : 
-            draft = st.text_area(
-                "Automated Analysis Results",
-                value = st.session_state.hallucinations.get(panel_id, False) 
-                key = f"automated_edit_{panel_id}" 
-            )
-    """ 
+        
+
+    for panel_id, analysis in st.session_state.hallucinations.items():
+
+        automated_a, manual_a = st.columns(2)
+
+        result_str = (
+            analysis if isinstance(analysis, str)
+            else json.dumps(analysis, indent=2)
+        )
+
+        with automated_a : 
+            editing_a = st.session_state.editing_notes.get(panel_id, False)
+            if not editing_a:
+                displayed = st.session_state.hallucination_out.get(
+                    panel_id,
+                    st.session_state.hallucinations.get(panel_id, result_str)
+                )
+                st.markdown(displayed)
+                if st.button("Edit text", key=f"manual_edit_{panel_id}"):
+                    st.session_state.editing_notes[panel_id] = True
+                    st.rerun()
+
+            else:
+                draft = st.text_area(
+                    "Automated Analysis Results",
+                    value=st.session_state.hallucination_out.get(
+                        panel_id,
+                        result_str
+                    ),
+                    key=f"automated_edit_{panel_id}"
+                )
+
+                save_col, cancel_col = st.columns(2)
+
+                with save_col:
+                    if st.button(
+                        "Save hallucinations",
+                        key=f"save_edits_{panel_id}"
+                    ):
+                        st.session_state.hallucination_out[panel_id] = draft
+
+                        st.session_state.editing_notes[panel_id] = False
+
+                        st.rerun()
+
+                with cancel_col:
+                    if st.button(
+                        "Cancel edits",
+                        key=f"cancel_auto_edits_{panel_id}"
+                    ):
+                        # FIX: editing_otes -> editing_notes
+                        st.session_state.editing_notes[panel_id] = False
+                        st.rerun()
+
+        with manual_a:
+            editing_m = st.session_state.editing_manual.get(panel_id, False)
+
+            if not editing_m:
+                current = st.session_state.manual_note_edit.get(panel_id, "")
+                st.markdown(
+                    current if current
+                    else "No manually flagged edits are currently available."
+                )
+                if st.button(
+                    "Edit manual notes",
+                    key=f"edit_manual_{panel_id}"
+                ):
+                    st.session_state.editing_manual[panel_id] = True
+                    st.rerun()
+            else:
+                draft_man = st.text_area(
+                    "Manual Notes", 
+                    value=st.session_state.manual_note_edit.get(panel_id, ""),
+                    key=f"manual_notes_{panel_id}",
+                    placeholder="Add your manual notes here."
+                )
+
+                save_man, cancel_man = st.columns(2)
+
+                with save_man:
+                    if st.button(
+                        "Save manual notes",
+                        key=f"save_manual_notes_{panel_id}"
+                    ):
+                        st.session_state.manual_note_edit[panel_id] = draft_man
+                        st.session_state.editing_manual[panel_id] = False
+                        st.rerun()
+
+                with cancel_man:
+                    if st.button(
+                        "Cancel edits",
+                        # FIX: missing f-string
+                        key=f"cancel_manual_edits_{panel_id}"
+                    ):
+                        st.session_state.editing_manual[panel_id] = False
+                        st.rerun()
 if __name__ == "__main__":
     main()
