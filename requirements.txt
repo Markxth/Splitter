@@ -1,5 +1,11 @@
-# requirements.txt
+streamlit
+pillow
+opencv-python
+python-dotenv
 torch
-accelerate
-sentencepiece
+transformers
 qwen-vl-utils
+google-genai
+streamlit-cropper
+summac
+streamlit-sortables
