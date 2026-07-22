@@ -214,7 +214,7 @@ def text_analysis(text_original, text_analysis_instructions) :
     client = genai.Client()
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash", # [UI/UX CHANGE & TYPO FIX]: Updated model name from invalid "gemini-3.5-flash" to "gemini-2.5-flash" to prevent runtime API errors.
+        model="gemini-2.5-flash", 
         contents=text_original,
         config = {
             "system_instruction" : text_analysis_instructions
@@ -465,7 +465,6 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
         file_uploaded = st.file_uploader("Upload a file", type=["png","jpg","jpeg"], accept_multiple_files = True)
 
 
-    # [ERROR FIX]: Now that 'text_original' and 'user_text' are defined above, this f-string will evaluate perfectly.
     text_analyis_instructions = f"""Text_Mapping": {{
     "Original text : {text_original}
     "Embedded_Matching_Text": "Rewrite the original text with inline XML tags marking entities using the attributes in {user_text} (e.g., <object>car</object>, <relation>beside</relation>, <attribute>red</attribute>). Do NOT add or change the text in ANY other way than indicated."
@@ -625,7 +624,6 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
             with st.expander("Trash bin"): 
                 for panel_id, trash_item in list(st.session_state.trash_bin.items()) : 
                     st.image(trash_item["img"], f"Analysis : {trash_item['analysis']}") 
-                    # [TYPO FIX]: Fixed typo in button key "restored_panle_" to "restored_panel_" for correct state identification.
                     if st.button("Restore panel" , key = f"restored_panel_{panel_id}") : 
                         if panel_id in st.session_state.trash_bin : 
                             trash_item = st.session_state.trash_bin[panel_id]
@@ -636,7 +634,6 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                             st.rerun() 
             
         
-        # [UI/UX CHANGE]: Grouped main action buttons under an organized Expander/Container section for cleaner layout structure.
         with st.expander("Actions & Analysis Hub", expanded=True):
             if st.button("Run QWEN analsysis", type="secondary", key="run_qwen_analysis") :
                 st.spinner("Analyzing panels...")
@@ -666,7 +663,6 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                         json.dump(
                             st.session_state.analysis_results, f, indent = 4   
                         )
-                # [TYPO FIX]: Fixed typo in success message from "Succesfully" to "Successfully".
                 st.success("Successfully exported to a JSON file!") 
         
         
@@ -703,7 +699,6 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                     analysis = summac(text_original, st.session_state.gem_results) 
                     st.session_state.summac_results = analysis #summac already returns a dictionary
                     st.write(st.session_state.summac_results)
-                    # [UI/UX CHANGE & ERROR FIX]: Removed a stray loose character 'F' that was causing a NameError/SyntaxError.
                 if st.session_state.summac_results :
                     for panel_id , description in st.session_state.summac_results.items() :
                         print(f"SummaC analysis for panel {panel_id} : {description}")
@@ -721,13 +716,11 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                             qwen_output,
                             text_original,
                             gemini_description,
-                            # [UI/UX CHANGE & ERROR FIX]: Completed the truncated arguments of the hallucination function call to fix broken functionality and layout rendering.
                             {pid: img for pid, img in panels_kept},
                             panel_id
                         )
                         st.session_state.hallucination_out[panel_id] = result
 
-            # [UI/UX CHANGE]: Added rendering for Hallucination Audit results so users can view the output data instead of it being hidden behind broken function execution.
             if st.session_state.hallucination_out:
                 with st.expander("Hallucination Audit Results", expanded=True):
                     for panel_id, issues in st.session_state.hallucination_out.items():
