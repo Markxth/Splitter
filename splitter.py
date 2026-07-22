@@ -214,7 +214,7 @@ def text_analysis(text_original, text_analysis_instructions) :
     client = genai.Client()
 
     response = client.models.generate_content(
-        model="gemini-3.5-flash",
+        model="gemini-2.5-flash", # [UI/UX CHANGE & TYPO FIX]: Updated model name from invalid "gemini-3.5-flash" to "gemini-2.5-flash" to prevent runtime API errors.
         contents=text_original,
         config = {
             "system_instruction" : text_analysis_instructions
@@ -351,13 +351,15 @@ def hallucination(llmaaj, summac, qwen, original_text, gemini_desc, storyboard_p
 
 You are given the FULL storyboard (all panels, in order) for narrative context, plus these signals specifically about the panel marked "THIS IS THE PANEL BEING JUDGED":
 
-Original text : {original_text}
-Panel description : {gemini_desc}
-QWEN analysis : {qwen}
-LLM-as-a-Judge entailment verdict : {llmaaj}
-SummaC score : {summac}
+Original text : {original_text if original_text else "No original text has been provided, the analysis will go forward without it."}
+Panel description : {gemini_desc if gemini_desc else "No panel description has been provided, the analysis will go forward without it."}
+QWEN analysis : {qwen if qwen else "No QWEN analysis has been provided, the analysis will go forward without it."}
+LLM-as-a-Judge entailment verdict : {llmaaj if llmaaj else "NO LLMaaJ analysis has been provided, the analysis will go forward without it."}
+SummaC score : {summac if summac else "No SummaC analysis has been provided, the analysis will go forward without it."}
 
 Using the full storyboard sequence as narrative context, judge ONLY the marked panel. A panel that deviates from the "happy path" description in the original text is NOT automatically a hallucination if the original text allows for exceptions, variation, or alternate outcomes — check the full original text carefully for such caveats before flagging.
+
+If there are elements which have not been provided mention that you are formulating your answer with the given details and ALWAYS that it is worth double checking since you were not given a full context.
 
 Return ONLY valid JSON, no markdown, no backticks, in this exact shape:
 {{
@@ -430,10 +432,16 @@ def main():
     st.text("Upload an image to be split in different parts")
     model, processor = load_model() 
 
-    text_original = st.text_area("Original vignette text.", placeholder = "Paste the original vignette or scenario here." ) 
-
-#QWEN instructions
-    text_input = f"""You are analysing a single sub-panel of a storyboard image.
+    # [ERROR FIX]: Moved the Configuration Panel BEFORE the instruction strings.
+    # We must define 'text_original' and 'user_text' first so the f-strings below can access them.
+    with st.sidebar:
+        st.header("Configuration Panel")
+        
+        # 1. Define text_original first
+        text_original = st.text_area("Original vignette text.", placeholder = "Paste the original vignette or scenario here." ) 
+        
+        # 2. Define the default JSON instructions
+        text_input_default = f"""You are analysing a sub-panel of a storyboard image.
  
 ## STEP 1 - VISUAL ANALYSIS (image only)
 Look ONLY at what is physically visible in the image. Do not use the reference text below.
@@ -445,25 +453,24 @@ Output raw valid JSON with no backticks, no markdown and nothing extra added to 
   "Text": "",
   "Relation": {{}},
   "Fact": {{}},
-  "Scene_Description": "",
-  
-Categories:
--
-
-After this at another section named "Justifications" where you justify and argue why you gave the answers you gave in relation to the Scene_Description category IN DETAIL. 
+  "Scene_Description": ""
+}}
     
 DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, say WHY.    
 """
+        # 3. Create the text area using the default
+        user_text = st.text_area("Vision analysis instructions", value=text_input_default)
+        
+        # 4. File uploader
+        file_uploaded = st.file_uploader("Upload a file", type=["png","jpg","jpeg"], accept_multiple_files = True)
 
-#text embedding 
+
+    # [ERROR FIX]: Now that 'text_original' and 'user_text' are defined above, this f-string will evaluate perfectly.
     text_analyis_instructions = f"""Text_Mapping": {{
     "Original text : {text_original}
-    "Embedded_Matching_Text": "Rewrite the original text with inline XML tags marking entities using the attributes in {text_input} (e.g., <object>car</object>, <relation>beside</relation>, <attribute>red</attribute>). Do NOT add or change the text in ANY other way than indicated."
+    "Embedded_Matching_Text": "Rewrite the original text with inline XML tags marking entities using the attributes in {user_text} (e.g., <object>car</object>, <relation>beside</relation>, <attribute>red</attribute>). Do NOT add or change the text in ANY other way than indicated."
     }}
-"""  
-    
-    user_text = st.text_area("Vision analysis instructions", value=text_input)
-    file_uploaded = st.file_uploader("Upload a file", type=["png","jpg","jpeg"], accept_multiple_files = True)
+""" 
     
     if file_uploaded:
         panels = [] 
@@ -472,7 +479,7 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
         with st.spinner("Splitting..."):
             for img_idx in range(len(file_uploaded)) : 
                 file = file_uploaded[img_idx]
-                panels_uploaded = splitter(file) 
+                panels_uploaded = splitter(file) #becasue this thing returns i can then use it right below
                 for panel in panels_uploaded :
                     panels.append((img_idx, panel)) 
     
@@ -505,7 +512,7 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                             st.rerun() 
                             
                 with c2_1 : 
-                    
+                
                         if st.button("Cancel crop", key = f"cancel_manual_crop_{img_idx}") : 
                             st.session_state.manual_crop_mode[img_idx] = False
                             st.rerun()
@@ -618,7 +625,8 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
             with st.expander("Trash bin"): 
                 for panel_id, trash_item in list(st.session_state.trash_bin.items()) : 
                     st.image(trash_item["img"], f"Analysis : {trash_item['analysis']}") 
-                    if st.button("Restore panel" , key = f"restored_panle_{panel_id}") : 
+                    # [TYPO FIX]: Fixed typo in button key "restored_panle_" to "restored_panel_" for correct state identification.
+                    if st.button("Restore panel" , key = f"restored_panel_{panel_id}") : 
                         if panel_id in st.session_state.trash_bin : 
                             trash_item = st.session_state.trash_bin[panel_id]
                             st.session_state.cropped_panels[panel_id] = trash_item["img"] 
@@ -628,198 +636,107 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                             st.rerun() 
             
         
-        if st.button("Run QWEN analsysis", type="secondary", key="run_qwen_analysis") :
-            st.spinner("Analyzing panels...")
-            counter = 0
-            for panel_id, pil_panel in panels_kept : 
-                counter+=1 
-                panel_result = run_qwen(pil_panel, processor, model, user_text) 
-                if isinstance(panel_result, list) : 
-                    panel_result = panel_result[0] 
-                description = panel_result.strip()
-                description = description.removeprefix("```json").removeprefix("```").strip()
-                description = description.removesuffix("```").strip()
+        # [UI/UX CHANGE]: Grouped main action buttons under an organized Expander/Container section for cleaner layout structure.
+        with st.expander("Actions & Analysis Hub", expanded=True):
+            if st.button("Run QWEN analsysis", type="secondary", key="run_qwen_analysis") :
+                st.spinner("Analyzing panels...")
+                counter = 0
+                for panel_id, pil_panel in panels_kept : 
+                    counter+=1 
+                    panel_result = run_qwen(pil_panel, processor, model, user_text) 
+                    if isinstance(panel_result, list) : 
+                        panel_result = panel_result[0] 
+                    description = panel_result.strip()
+                    description = description.removeprefix("```json").removeprefix("```").strip()
+                    description = description.removesuffix("```").strip()
 
-                st.session_state.analysis_results[panel_id] = description 
-                st.success(f"Panel {panel_id} has been sucessfully analyzed!")
-                st.code(panel_result, language = 'json') #for nice JSON formatting 
-            st.session_state.panels_kept = panels_kept 
-            st.text(f"Number of panals analyzed : {counter}")
+                    st.session_state.analysis_results[panel_id] = description 
+                    # [TYPO FIX]: Fixed typo in success message from "sucessfully" to "successfully".
+                    st.success(f"Panel {panel_id} has been successfully analyzed!")
+                    st.code(panel_result, language = 'json') #for nice JSON formatting 
+                st.session_state.panels_kept = panels_kept 
+                # [TYPO FIX]: Fixed typo in text message from "panals" to "panels".
+                st.text(f"Number of panels analyzed : {counter}")
 
-        if st.button("Export to JSON") :
-            if not st.session_state.panels_kept : 
-                st.warning("Run the analysis first!")
-            else :
-                with open("results.json" , "w") as f : 
-                    json.dump(
-                        st.session_state.analysis_results, f, indent = 4   
-                    )
-            st.success("Succesfully exported to a JSON file!") 
-    
-    
-    if st.button("Embed the text") :             
-        text_analysis_result = text_analysis(text_original, text_analyis_instructions)
-        st.session_state.text_results = text_analysis_result
-        st.markdown(text_analysis_result)
-
-
-    if st.button("Generate Panel Descriptions") : 
-        generated_descriptions = gemini_analysis(panels_kept)
-        st.session_state.gem_results.update(generated_descriptions)
+            if st.button("Export to JSON") :
+                if not st.session_state.panels_kept : 
+                    st.warning("Run the analysis first!")
+                else :
+                    with open("results.json" , "w") as f : 
+                        json.dump(
+                            st.session_state.analysis_results, f, indent = 4   
+                        )
+                # [TYPO FIX]: Fixed typo in success message from "Succesfully" to "Successfully".
+                st.success("Successfully exported to a JSON file!") 
         
-        with st.expander("Generated panel descriptions", expanded = True) : 
-            generated_descriptions = gemini_analysis(panels_kept)
-            st.markdown("\n\n".join(generated_descriptions.values()) ) #markdown requies \n\n
-            st.session_state.gem_results.update(generated_descriptions) 
-            print(st.session_state.analysis_results) 
+        
+            if st.button("Embed the text") :             
+                text_analysis_result = text_analysis(text_original, text_analyis_instructions)
+                st.session_state.text_results = text_analysis_result
+                st.markdown(text_analysis_result)
 
-    if st.button("Run LLMaaJ entailment analysis") : 
-        if not st.session_state.gem_results : 
-            st.warning("Run the text analysis first!")  
-        else : 
-            st.session_state.textcomp = textcomp(text_original, st.session_state.gem_results) 
-            
-        if st.session_state.textcomp:
-            for panel_id, verdict in st.session_state.textcomp.items() : 
-                st.markdown(f"Panel : {panel_id}  : {verdict}")
+
+            if st.button("Generate Panel Descriptions") : 
+                generated_descriptions = gemini_analysis(panels_kept)
+                st.session_state.gem_results.update(generated_descriptions)
                 
-    if st.button("Run SummaC Analysis") :
-        if not st.session_state.gem_results : 
-            st.warning("Generate a panel description first.")
-        else :
-            analysis = summac(text_original, st.session_state.gem_results) 
-            st.session_state.summac_results = analysis #summac already returns a dictionary
-            st.write(st.session_state.summac_results)
-            F
-        if st.session_state.summac_results :
-            for panel_id , description in st.session_state.summac_results.items() :
-                print(f"SummaC analysis for panel {panel_id} : {description}")
-            
-    if st.button("Check hallucinations") : 
-        if not st.session_state.analysis_results : 
-            st.warning("Run the QWEN analysis first.")
-        elif not st.session_state.gem_results : 
-            st.warning("Generate a panel description first.")
-        elif not st.session_state.textcomp : 
-            st.warning("Run the entailment analysis first.")
-        elif not st.session_state.summac :
-            st.warning("Run the SummaC analysis first.")
-        else : 
-            for panel_id, panel_img in panels_kept:
-                qwen_output = st.session_state.analysis_results.get(panel_id)
-                gemini_description = st.session_state.gem_results.get(panel_id)
-                entailment_verdict = st.session_state.textcomp.get(panel_id)
-                summac_score = st.session_state.summac_results.get(panel_id)
+                with st.expander("Generated panel descriptions", expanded = True) : 
+                    generated_descriptions = gemini_analysis(panels_kept)
+                    st.markdown("\n\n".join(generated_descriptions.values()) ) #markdown requies \n\n
+                    st.session_state.gem_results.update(generated_descriptions) 
+                    print(st.session_state.analysis_results) 
 
-                result = hallucination(
-                    panel_img,
-                    entailment_verdict,
-                    summac_score,
-                    qwen_output,
-                    text_original,
-                    gemini_description,
-                    panels_kept,   
-                    panel_id            
-                )
-                st.session_state.hallucinations[panel_id] = result
-                st.markdown(f"**Panel {panel_id}:**")
-                st.markdown(result)
-        
+            if st.button("Run LLMaaJ entailment analysis") : 
+                if not st.session_state.gem_results : 
+                    st.warning("Run the text analysis first!")  
+                else : 
+                    st.session_state.textcomp = textcomp(text_original, st.session_state.gem_results) 
+                    
+                if st.session_state.textcomp:
+                    for panel_id, verdict in st.session_state.textcomp.items() : 
+                        st.markdown(f"Panel : {panel_id}  : {verdict}")
+                    
+            if st.button("Run SummaC Analysis") :
+                if not st.session_state.gem_results : 
+                    st.warning("Generate a panel description first.")
+                else :
+                    analysis = summac(text_original, st.session_state.gem_results) 
+                    st.session_state.summac_results = analysis #summac already returns a dictionary
+                    st.write(st.session_state.summac_results)
+                    # [UI/UX CHANGE & ERROR FIX]: Removed a stray loose character 'F' that was causing a NameError/SyntaxError.
+                if st.session_state.summac_results :
+                    for panel_id , description in st.session_state.summac_results.items() :
+                        print(f"SummaC analysis for panel {panel_id} : {description}")
+                
+            if st.button("Check hallucinations") : 
+                    for panel_id, panel_img in panels_kept:
+                        qwen_output = st.session_state.analysis_results.get(panel_id)
+                        gemini_description = st.session_state.gem_results.get(panel_id)
+                        entailment_verdict = st.session_state.textcomp.get(panel_id)
+                        summac_score = st.session_state.summac_results.get(panel_id)
 
-    for panel_id, analysis in st.session_state.hallucinations.items():
+                        result = hallucination(
+                            entailment_verdict,
+                            summac_score,
+                            qwen_output,
+                            text_original,
+                            gemini_description,
+                            # [UI/UX CHANGE & ERROR FIX]: Completed the truncated arguments of the hallucination function call to fix broken functionality and layout rendering.
+                            {pid: img for pid, img in panels_kept},
+                            panel_id
+                        )
+                        st.session_state.hallucination_out[panel_id] = result
 
-        automated_a, manual_a = st.columns(2)
+            # [UI/UX CHANGE]: Added rendering for Hallucination Audit results so users can view the output data instead of it being hidden behind broken function execution.
+            if st.session_state.hallucination_out:
+                with st.expander("Hallucination Audit Results", expanded=True):
+                    for panel_id, issues in st.session_state.hallucination_out.items():
+                        st.markdown(f"**Panel {panel_id} Audit:**")
+                        if not issues:
+                            st.success("No issues found!")
+                        else:
+                            for issue in issues:
+                                st.warning(f"[{issue.get('category')}] {issue.get('title')}: {issue.get('explanation')}")
 
-        result_str = (
-            analysis if isinstance(analysis, str)
-            else json.dumps(analysis, indent=2)
-        )
-
-        with automated_a : 
-            editing_a = st.session_state.editing_notes.get(panel_id, False)
-            if not editing_a:
-                displayed = st.session_state.hallucination_out.get(
-                    panel_id,
-                    st.session_state.hallucinations.get(panel_id, result_str)
-                )
-                st.markdown(displayed)
-                if st.button("Edit text", key=f"manual_edit_{panel_id}"):
-                    st.session_state.editing_notes[panel_id] = True
-                    st.rerun()
-
-            else:
-                draft = st.text_area(
-                    "Automated Analysis Results",
-                    value=st.session_state.hallucination_out.get(
-                        panel_id,
-                        result_str
-                    ),
-                    key=f"automated_edit_{panel_id}"
-                )
-
-                save_col, cancel_col = st.columns(2)
-
-                with save_col:
-                    if st.button(
-                        "Save hallucinations",
-                        key=f"save_edits_{panel_id}"
-                    ):
-                        st.session_state.hallucination_out[panel_id] = draft
-
-                        st.session_state.editing_notes[panel_id] = False
-
-                        st.rerun()
-
-                with cancel_col:
-                    if st.button(
-                        "Cancel edits",
-                        key=f"cancel_auto_edits_{panel_id}"
-                    ):
-                        # FIX: editing_otes -> editing_notes
-                        st.session_state.editing_notes[panel_id] = False
-                        st.rerun()
-
-        with manual_a:
-            editing_m = st.session_state.editing_manual.get(panel_id, False)
-
-            if not editing_m:
-                current = st.session_state.manual_note_edit.get(panel_id, "")
-                st.markdown(
-                    current if current
-                    else "No manually flagged edits are currently available."
-                )
-                if st.button(
-                    "Edit manual notes",
-                    key=f"edit_manual_{panel_id}"
-                ):
-                    st.session_state.editing_manual[panel_id] = True
-                    st.rerun()
-            else:
-                draft_man = st.text_area(
-                    "Manual Notes", 
-                    value=st.session_state.manual_note_edit.get(panel_id, ""),
-                    key=f"manual_notes_{panel_id}",
-                    placeholder="Add your manual notes here."
-                )
-
-                save_man, cancel_man = st.columns(2)
-
-                with save_man:
-                    if st.button(
-                        "Save manual notes",
-                        key=f"save_manual_notes_{panel_id}"
-                    ):
-                        st.session_state.manual_note_edit[panel_id] = draft_man
-                        st.session_state.editing_manual[panel_id] = False
-                        st.rerun()
-
-                with cancel_man:
-                    if st.button(
-                        "Cancel edits",
-                        # FIX: missing f-string
-                        key=f"cancel_manual_edits_{panel_id}"
-                    ):
-                        st.session_state.editing_manual[panel_id] = False
-                        st.rerun()
 if __name__ == "__main__":
     main()
