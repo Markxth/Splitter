@@ -1038,9 +1038,9 @@ def main():
                         else:
                             for issue in issues:
                                 st.warning(f"[{issue.get('category')}] {issue.get('title')}: {issue.get('explanation')}")
-
-            if st.session_state.hallucination_out:
-                with st.expander("Hallucination editor", expanded=True):
+            
+            if st.session_state.hallucination_out : 
+                with st.expander("Hallucination Audit Results", expanded=True):
                     for panel_id, issues in st.session_state.hallucination_out.items():
                         st.markdown(f"### Panel {panel_id} - Editor")
                         if not issues:
@@ -1048,40 +1048,40 @@ def main():
                         else:
                             ai_default_text = ""
                             for issue in issues:
-                                ai_default_text += f"[{issue.get('category')}] {issue.get('title')}\nExplanation: {issue.get('explanation')}\n\n"
+                                ai_default_text += f"[{issue.get('category')}] {issue.get('title')}\nExplanation: {issue.get('explanation')}\n\n" 
                         gen, man = st.columns(2)
-                        with gen:
+                        with gen : 
                             st.text_area(
                                 "Hallucination Result",
-                                value=ai_default_text,
-                                height=150,
-                                key=f"ai_notes_{panel_id}"
+                                value = ai_default_text,
+                                height = 150,
+                                key = f"ai_notes_{panel_id}"
                             )
-                        with man:
+                        with man :
                             st.text_area(
                                 "Manual notes",
-                                value=st.session_state.manual_notes.get(panel_id, ""),
-                                placeholder="Add your manual notes here.",
-                                height=150,
-                                key=f"man_notes_{panel_id}"
+                                value = st.session_state.manual_notes.get(panel_id, ""),
+                                placeholder = "Add your manual notes here.",
+                                height = 150,
+                                key = f"man_notes_{panel_id}"
                             )
-
+                            
                         downloaded = {}
-                        for panel_id, _ in st.session_state.panels_kept:
+                        for panel_id , _ in st.session_state.panels_kept : 
                             downloaded[panel_id] = {
-                                "ai_verdict": st.session_state.get(f"ai_notes_{panel_id}", ""),
-                                "manual_notes": st.session_state.get(f"man_notes_{panel_id}", "")
+                                "ai_verdict" : st.session_state.get(f"ai_notes_{panel_id}", ""),
+                                "manual_notes" : st.session_state.get(f"man_notes_{panel_id}", "")
                             }
-
-                        json_format = json.dumps(downloaded, indent=4)
-
+                        
+                        json_format = json.dumps(downloaded, indent = 4 )
+ 
                     st.download_button(
-                        label="Download the hallucination results",
-                        data=json_format,
-                        file_name="hallucination_results.json",
-                        type="secondary"
-                    )
-
-
+                        label = "Download the hallucination results",
+                        data = json_format, 
+                        file_name = "hallucination_results.json",
+                        type = "secondary"
+                    ) 
+                            
+ 
 if __name__ == "__main__":
     main()
