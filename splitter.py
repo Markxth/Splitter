@@ -389,321 +389,629 @@ If there are no hallucinations, return {{"issues": []}}.
     except json.JSONDecodeError:
         return [{"category": "Other", "title": "Parse error", "explanation": raw, "confidence": None}]
 
+def cross_panel(original_text, analysis_results, gem_results) : #where analysis results are the QWEN analysis, and the gem_results are the panel descriptions
+    #this function is for cross-pane consistency checks for hallucinations.
+    if not analysis_results : 
+        return [] 
+    if not gem_results : 
+        return [] 
+    if not original_text : 
+        return [] 
+    
+    panel_data = []
+    panel_chunks = [] 
+    combined_panels = [] 
+    
+    #build a dictionary to store all the sub-panels info
+    for panel_id, qwen_raw, in analysis_results.items() : 
+        try: 
+            qwen_data = json.loads(qwen_raw) 
+            if not isinstance(qwen_data, dict) : 
+                qwen_data = {}
+        except (json.JSONDecodeError, TypeError): 
+            qwen_data = {} 
+            
+        panel_temp = { 
+            "qwen_data" : qwen_data,
+            "qwen_raw" : qwen_raw,
+            "Panel Description" : gem_results.get(panel_id, "No panel description has been found.") 
+                    }
+    
+        panel_aggregated = f"""Panel {panel_id}
+
+            QWEN structured extraction:
+            {qwen_data}
+
+            Generated description:
+            {panel_temp["Panel Description"]}
+            """.strip()
+    
+         
+    panel_data.append(panel_temp)
+
+    # Keep formatted text for the LLM
+    panel_chunks.append(panel_aggregated)
+
+    # Combine ALL panels into one string
+    combined_panels = "\n\n".join(panel_chunks)
+
+    #clone the repo and edit the code if you want to change this.
+    instructions = f"""
+You are auditing a SET of AI-generated storyboard panel analyses for
+CROSS-PANEL hallucinations.
+
+ORIGINAL STORYBOARD TEXT (ground truth):
+{original_text}
+
+PANEL ANALYSES:
+{combined_panels}
+
+TASK:
+
+Analyze ALL panels together.
+
+First, identify details that recur across multiple panels.
+These may include:
+- objects
+- attributes
+- numbers
+- anatomical features
+- visible text
+- facts
+- relationships
+
+Then determine whether each recurring detail is supported by the
+original storyboard text.
+
+Only flag a detail when:
+
+1. It appears in TWO OR MORE panels, AND
+2. It is NOT supported by the original storyboard text.
+
+Do NOT flag something only because it repeats. If the original
+storyboard establishes that detail, its repetition is expected.
+
+For each qualifying issue, return:
+
+[
+  {{
+    "category": "short category",
+    "explanation": "why this is an unsupported recurring detail",
+    "panels": for example, ["panel_id_1", "panel_id_2"]
+  }}
+]
+
+Output ONLY valid JSON. NO markdown. NO backticks.
+
+If nothing qualifies, output exactly: "No cross panel inconsistency has been found."
+    """
+    
+    response = client.models.generate_content(
+            model="gemini-3.5-flash",
+            contents=instructions,
+        )
+    filtered = response.text.strip().removeprefix("```json").removesuffix("```").strip()
+    return filtered 
+
 def main():
-    if "text_results" not in st.session_state : 
-        st.session_state.text_results = [] 
-    if "panels_kept" not in st.session_state : 
-        st.session_state.panels_kept = [] 
-    if "cropped_panels" not in st.session_state : 
-        st.session_state.cropped_panels = {} #PIL image
-    if "crop_mode" not in st.session_state :
-        st.session_state.crop_mode = {} 
-    if "analysis_results" not in st.session_state : 
-        st.session_state.analysis_results = {} 
-    if "trash_bin" not in st.session_state : 
-        st.session_state.trash_bin = {} 
-    if "gem_results" not in st.session_state :
-        st.session_state.gem_results= {} 
-    if "textcomp" not in st.session_state :
+    if "text_results" not in st.session_state:
+        st.session_state.text_results = []
+    if "panels_kept" not in st.session_state:
+        st.session_state.panels_kept = []
+    if "cropped_panels" not in st.session_state:
+        st.session_state.cropped_panels = {}  # PIL image
+    if "crop_mode" not in st.session_state:
+        st.session_state.crop_mode = {}
+    if "analysis_results" not in st.session_state:
+        st.session_state.analysis_results = {}
+    if "trash_bin" not in st.session_state:
+        st.session_state.trash_bin = {}
+    if "gem_results" not in st.session_state:
+        st.session_state.gem_results = {}
+    if "textcomp" not in st.session_state:
         st.session_state.textcomp = {}
-    if "summac_results" not in st.session_state :
-        st.session_state.summac_results = {}  
-    if "manual_crops" not in st.session_state :
-        st.session_state.manual_crops = {} 
-    if "manual_crop_mode" not in st.session_state : 
-        st.session_state. manual_crop_mode=  {} 
-    if "panels_order" not in st.session_state: 
+    if "summac_results" not in st.session_state:
+        st.session_state.summac_results = {}
+    if "manual_crops" not in st.session_state:
+        st.session_state.manual_crops = {}
+    if "manual_crop_mode" not in st.session_state:
+        st.session_state.manual_crop_mode = {}
+    if "panels_order" not in st.session_state:
         st.session_state.panels_order = []
-    if "hallucinations" not in st.session_state : 
-        st.session_state.hallucinations = {} 
-    if "manual_notes" not in st.session_state : 
-        st.session_state.manual_notes = {} 
-    if "editing_notes" not in st.session_state : #automated hallucination = bool 
-        st.session_state.editing_notes= {} 
-    if "hallucination_out" not in st.session_state :  #for saving automated 
-        st.session_state.hallucination_out  = {} 
-    if "manual_note_edit" not in st.session_state : #manual hallucination   
+    if "hallucinations" not in st.session_state:
+        st.session_state.hallucinations = {}
+    if "manual_notes" not in st.session_state:
+        st.session_state.manual_notes = {}
+    if "editing_notes" not in st.session_state:  # automated hallucination = bool
+        st.session_state.editing_notes = {}
+    if "hallucination_out" not in st.session_state:  # for saving automated
+        st.session_state.hallucination_out = {}
+    if "manual_note_edit" not in st.session_state:  # manual hallucination
         st.session_state.manual_note_edit = {}
-    if "editing_manual" not in st.session_state: #for manual hallucination editing - bool 
-        st.session_state.editing_manual = {} 
-        
-    st.set_page_config("Splitter & Storyboard Analyzer", layout = "wide") 
-    st.title("Storyboard Analyzer &  Splitter")
-    st.text("Upload an image to be split in different parts")
-    model, processor = load_model() 
+    if "editing_manual" not in st.session_state:  # for manual hallucination editing - bool
+        st.session_state.editing_manual = {}
+    if "cross_panel" not in st.session_state : 
+        st.session_state.cross_panel = {} #for cross panel hallucination checking
+
+    st.set_page_config("Splitter & Storyboard Analyzer", page_icon="🎬", layout="wide")
+
+
+    st.markdown(
+        """
+        <style>
+        .block-container { padding-top: 2rem; padding-bottom: 3rem; }
+        div[data-testid="stExpander"] {
+            border: 1px solid rgba(120,120,120,0.25);
+            border-radius: 10px;
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            border-radius: 10px;
+        }
+        .stButton>button {
+            border-radius: 8px;
+            font-weight: 500;
+        }
+        h1, h2, h3 { letter-spacing: -0.3px; }
+        .panel-caption {
+            font-size: 0.85rem;
+            opacity: 0.75;
+            margin-top: -0.4rem;
+        }
+        .step-badge {
+            text-align: center;
+            padding: 0.4rem 0.2rem;
+            border-radius: 8px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            border: 1px solid rgba(120,120,120,0.25);
+        }
+        .step-done { background: rgba(46,160,67,0.15); border-color: rgba(46,160,67,0.4); }
+        .step-todo { opacity: 0.55; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.title("Storyboard Analyzer & Splitter")
+    st.caption("Split storyboard images into panels, curate them, and run AI-assisted review.")
+
+    with st.expander("How it works / Recommended workflow", expanded=False):
+        st.markdown(
+            """
+            **1. How it works**
+            - Upload storyboard image(s) in the sidebar
+            - Select or crop the panels you want to keep
+            - Run the panel analysis and review results in the main view
+            """
+        )
+        st.markdown(
+            """
+            **2. Recommended Workflow**
+
+            For best results, use the application in the following order:
+
+            - Enter the original storyboard text.
+            - (Optional) Modify the vision analysis criteria if required.
+            - Upload one or more storyboard images.
+            - Review the automatically extracted panels.
+            - Crop, delete, restore, or manually add panels if needed.
+            - Select which panels should be analyzed.
+            - Run the QWEN analysis.
+            - Embed the original text.
+            - Generate panel descriptions.
+            - Run the LLM-as-a-Judge analysis.
+            - Run the SummaC analysis.
+            - Check hallucinations.
+            - Review or edit the final results.
+            - Export or download the generated reports.
+
+            The sidebar contains 3 sections: 1) Input, 2) Analysis options, and 3) Panel.
+
+            **3. Vision Analysis Instructions**
+
+            Contains the prompt sent to the vision-language model (QWEN).
+
+            You can edit the task **criteria** (what to look for, how to justify answers).
+            The **JSON output format itself is fixed** and cannot be edited, so downstream
+            parsing (QWEN → analysis_results → hallucination checks) keeps working reliably.
+
+            By default, the criteria ask the model to extract:
+
+            Objects\n
+            Attributes\n
+            Numbers\n
+            Visible text\n
+            Relationships\n
+            Facts\n
+            Justifications for its own answers\n
+
+            Most users should leave this unchanged.
+            """
+        )
+
+    st.divider()    
+
+    model, processor = load_model()
 
     # [ERROR FIX]: Moved the Configuration Panel BEFORE the instruction strings.
     # We must define 'text_original' and 'user_text' first so the f-strings below can access them.
     with st.sidebar:
-        st.header("Configuration Panel")
-        
-        # 1. Define text_original first
-        text_original = st.text_area("Original vignette text.", placeholder = "Paste the original vignette or scenario here." ) 
-        
-        # 2. Define the default JSON instructions
-        text_input_default = f"""You are analysing a sub-panel of a storyboard image.
- 
-## STEP 1 - VISUAL ANALYSIS (image only)
-Look ONLY at what is physically visible in the image. Do not use the reference text below.
-Output raw valid JSON with no backticks, no markdown and nothing extra added to it. Only the JSON results:
-{{
-  "Object": [],
-  "Attribute": {{}},
-  "Number": {{}},
-  "Text": "",
-  "Relation": {{}},
-  "Fact": {{}},
-  "Scene_Description": ""
-}}
-    
-DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, say WHY.    
-"""
-        # 3. Create the text area using the default
-        user_text = st.text_area("Vision analysis instructions", value=text_input_default)
-        
-        # 4. File uploader
-        file_uploaded = st.file_uploader("Upload a file", type=["png","jpg","jpeg"], accept_multiple_files = True)
+        st.header("Input & Setup")
+        st.caption("Enter the original storyboard text and upload one or more images to get started.")
 
+        with st.container(border=True):
+            st.markdown("**Step 1 — Original text**")
+            text_original = st.text_area(
+                "Original storyboard text",
+                placeholder="Paste the original storyboard prompt or scenario here.",
+                height=140,
+            )
+            
+        criteria_before_default = (
+            "You are analysing a sub-panel of a storyboard image.\n\n"
+            "## STEP 1 - VISUAL ANALYSIS (image only)\n"
+            "Look ONLY at what is physically visible in the image. Do not use the reference text below."
+        )
+        fixed_json_intro = (
+            "Output raw valid JSON with no backticks, no markdown and nothing extra added to it. "
+            "Only the JSON results:"
+        )
+        fixed_json_schema = """{
+  "Object": [],
+  "Attribute": {},
+  "Number": {},
+  "Text": "",
+  "Relation": {},
+  "Fact": {},
+  "Scene_Description": ""
+}"""
+        criteria_after_default = (
+            "DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, say WHY."
+        )
+
+        with st.container(border=True):
+            st.markdown("**Step 2 — Vision analysis criteria**")
+            st.caption("Editable: what the model should look for and how it should justify its answers.")
+            criteria_before = st.text_area(
+                "Task criteria",
+                value=criteria_before_default,
+                height=120,
+            )
+
+            st.caption("Fixed output format — not editable, so panel parsing keeps working:")
+            st.code(f"{fixed_json_intro}\n{fixed_json_schema}", language="json")
+
+            criteria_after = st.text_area(
+                "Justification requirement",
+                value=criteria_after_default,
+                height=80,
+            )
+
+        #construct the final text
+        user_text = f"{criteria_before}\n{fixed_json_intro}\n{fixed_json_schema}\n    \n{criteria_after}\n"
+
+        with st.container(border=True):
+            st.markdown("**Step 3 — Upload images**")
+            file_uploaded = st.file_uploader(
+                "Upload storyboard image(s)",
+                type=["png", "jpg", "jpeg"],
+                accept_multiple_files=True,
+            )
+            st.caption("Use manual cropping if automatic extraction misses a panel.")
 
     text_analyis_instructions = f"""Text_Mapping": {{
     "Original text : {text_original}
     "Embedded_Matching_Text": "Rewrite the original text with inline XML tags marking entities using the attributes in {user_text} (e.g., <object>car</object>, <relation>beside</relation>, <attribute>red</attribute>). Do NOT add or change the text in ANY other way than indicated."
     }}
-""" 
-    
+"""
+
+    steps = [
+        ("1 Text", bool(text_original and text_original.strip())),
+        ("2 Images", bool(file_uploaded)),
+        ("3 Panels kept", bool(st.session_state.panels_kept)),
+        ("4 QWEN", bool(st.session_state.analysis_results)),
+        ("5 Embed", bool(st.session_state.text_results)),
+        ("6 Descriptions", bool(st.session_state.gem_results)),
+        ("7 Judge", bool(st.session_state.textcomp)),
+        ("8 SummaC", bool(st.session_state.summac_results)),
+        ("9 Hallucinations", bool(st.session_state.hallucination_out)),
+    ]
+    step_cols = st.columns(len(steps))
+    for col, (label, done) in zip(step_cols, steps):
+        css_class = "step-badge step-done" if done else "step-badge step-todo"
+        icon = "✅" if done else "⬜"
+        col.markdown(f"<div class='{css_class}'>{icon}<br>{label}</div>", unsafe_allow_html=True)
+
+    st.write("")  #some space
+
+    if not file_uploaded:
+        st.info("Start by uploading storyboard images and entering the original storyboard text in the sidebar.")
+
     if file_uploaded:
-        panels = [] 
-        st.success("File uploaded successfully!")
+        panels = []
+        st.success(" File uploaded successfully!")
 
         with st.spinner("Splitting..."):
-            for img_idx in range(len(file_uploaded)) : 
+            for img_idx in range(len(file_uploaded)):
                 file = file_uploaded[img_idx]
-                panels_uploaded = splitter(file) #becasue this thing returns i can then use it right below
-                for panel in panels_uploaded :
-                    panels.append((img_idx, panel)) 
-    
+                panels_uploaded = splitter(file)  # becasue this thing returns i can then use it right below
+                for panel in panels_uploaded:
+                    panels.append((img_idx, panel))
 
-        st.text("Choose the panels which you want to keep and be analyzed by QWEN.")
-        st.write("Please uncheck the panels you do not wish to keep.") 
+        st.markdown(" Select panels to keep")
+        st.caption("Uncheck any panels you do not want analyzed.")
 
         panels_kept = []
 
-        #manual crop section 
-        for img_idx, file in enumerate(file_uploaded) : #go through all files and put the counter back in the beginnig of the file, as .read() moves it to the end
+        # manual crop section
+        for img_idx, file in enumerate(file_uploaded):
             file.seek(0)
-            original_image = Image.open(file).convert("RGB")  
-            st.image(original_image, caption  = "Original uploaded file")
-            
-            if st.session_state.manual_crop_mode.get(img_idx, False) :
-                preview = st_cropper(
+            original_image = Image.open(file).convert("RGB")
+            with st.container(border=True):
+                st.image(original_image, caption=f"Original uploaded file #{img_idx + 1}")
+
+                if st.session_state.manual_crop_mode.get(img_idx, False):
+                    preview = st_cropper(
                         original_image,
-                        realtime_update = True, 
-                        aspect_ratio = None, 
-                        key=f"manual_crops_{img_idx}" 
+                        realtime_update=True,
+                        aspect_ratio=None,
+                        key=f"manual_crops_{img_idx}"
                     )
-                c1_1, c2_1 = st.columns(2)
-            
-                with c1_1 : 
-                        if st.button("Save crop", key = f"save_manual_crop_{img_idx}") : 
+                    c1_1, c2_1 = st.columns(2)
+
+                    with c1_1:
+                        if st.button(" Save crop", key=f"save_manual_crop_{img_idx}"):
                             manual_id_cropped = f"{img_idx}_manual_crop_{len(st.session_state.manual_crops)}"
                             st.session_state.manual_crops[manual_id_cropped] = preview
                             st.session_state.manual_crop_mode[img_idx] = False
-                            st.rerun() 
-                            
-                with c2_1 : 
-                
-                        if st.button("Cancel crop", key = f"cancel_manual_crop_{img_idx}") : 
+                            st.rerun()
+
+                    with c2_1:
+                        if st.button("Cancel crop", key=f"cancel_manual_crop_{img_idx}"):
                             st.session_state.manual_crop_mode[img_idx] = False
                             st.rerun()
-            
-            else: 
-                manual_crop_coloumn ,reset_manual_crop_coloumn = st.columns(2)
-                with manual_crop_coloumn : 
-                    if st.button("Crop image", key  =f"save_crop_true_{img_idx}") :
-                        st.session_state.manual_crop_mode[img_idx]= True
-                        st.rerun()  
-                with reset_manual_crop_coloumn :
-                    if img_idx in st.session_state.manual_crops : 
-                        if st.button("Cancel crop" , key =f"canceled_crop_{img_idx}") : 
-                            del st.session_state.manual_crops[img_idx] 
-                            st.rerun() 
 
-        #automatic crop section
-        with st.expander("Extracted panels", expanded  = True) :
-            if st.session_state.manual_crops is not None : 
-                for panel_id, pil_panel in st.session_state.manual_crops.items() : 
-                    st.image(pil_panel, f"Manual crop {panel_id}")
-                    width, height = pil_panel.size
-                    st.text(f"Panel size : {width} x {height} pixels")
-                    if st.button("Delete manual crop", key = f"deleted_manual_crop_{panel_id}") : 
-                        st.session_state.trash_bin[panel_id] = {
-                            "img"  : st.session_state.manual_crops.get(panel_id, pil_panel),
-                            "analysis" : st.session_state.analysis_results.get(panel_id)
-                        } 
-                        del st.session_state.manual_crops[panel_id] 
-                        st.session_state.manual_crops.pop(panel_id, None) 
-                        st.session_state.analysis_results.pop(panel_id, None)   
-                        st.rerun()
+                else:
+                    manual_crop_coloumn, reset_manual_crop_coloumn = st.columns(2)
+                    with manual_crop_coloumn:
+                        if st.button("Crop image", key=f"save_crop_true_{img_idx}"):
+                            st.session_state.manual_crop_mode[img_idx] = True
+                            st.rerun()
+                    with reset_manual_crop_coloumn:
+                        if img_idx in st.session_state.manual_crops:
+                            if st.button("Cancel crop", key=f"canceled_crop_{img_idx}"):
+                                del st.session_state.manual_crops[img_idx]
+                                st.rerun()
 
-            for panel_idx, (img_idx, panel) in enumerate(panels): 
-                panel_id = f"{img_idx}_{panel_idx}" 
-                if panel_id in st.session_state.trash_bin : 
-                    continue 
-                print(type(panel), panel) 
-                if isinstance(panel, tuple) : 
-                    panel=panel[0]
-                
+        # automatic crop section
+        with st.expander("Extracted panels", expanded=True):
+            manual_items = list(st.session_state.manual_crops.items())
+            for row_start in range(0, len(manual_items), 3):
+                row_items = manual_items[row_start:row_start + 3]
+                grid_cols = st.columns(3)
+                for col, (panel_id, pil_panel) in zip(grid_cols, row_items):
+                    with col:
+                        with st.container(border=True):
+                            st.image(pil_panel, f"Manual crop {panel_id}")
+                            width, height = pil_panel.size
+                            st.markdown(f"<div class='panel-caption'>Panel size: {width} x {height} pixels</div>", unsafe_allow_html=True)
+                            if st.button("Delete manual crop", key=f"deleted_manual_crop_{panel_id}"):
+                                st.session_state.trash_bin[panel_id] = {
+                                    "img": st.session_state.manual_crops.get(panel_id, pil_panel),
+                                    "analysis": st.session_state.analysis_results.get(panel_id)
+                                }
+                                del st.session_state.manual_crops[panel_id]
+                                st.session_state.manual_crops.pop(panel_id, None)
+                                st.session_state.analysis_results.pop(panel_id, None)
+                                st.rerun()
+
+            for panel_idx, (img_idx, panel) in enumerate(panels):
+                panel_id = f"{img_idx}_{panel_idx}"
+                if panel_id in st.session_state.trash_bin:
+                    continue
+                print(type(panel), panel)
+                if isinstance(panel, tuple):
+                    panel = panel[0]
+
                 rgb_panel = cv.cvtColor(panel, cv.COLOR_GRAY2RGB)
-                pil_panel = Image.fromarray(rgb_panel) 
-                pil_panel_crop = st.session_state.cropped_panels.get(panel_id, pil_panel) 
+                pil_panel = Image.fromarray(rgb_panel)
+                pil_panel_crop = st.session_state.cropped_panels.get(panel_id, pil_panel)
 
-                col1, col2 = st.columns([1,2]) 
+                with st.container(border=True):
+                    st.markdown(f"**Panel `{panel_id}`**")
+                    col1, col2 = st.columns([1, 2])
 
-                with col1: 
-                    if st.session_state.crop_mode.get(panel_id, False) :
-                        preview = st_cropper(
-                            pil_panel,
-                            realtime_update = True, 
-                            aspect_ratio = None, 
-                            key=f"cropper_{panel_id}" 
-                        )
+                    with col1:
+                        if st.session_state.crop_mode.get(panel_id, False):
+                            preview = st_cropper(
+                                pil_panel,
+                                realtime_update=True,
+                                aspect_ratio=None,
+                                key=f"cropper_{panel_id}"
+                            )
 
-                        c1,c2 = st.columns(2) 
-                        with c1 :
-                            if st.button("Save crop", key  =f"save_crop_false_{panel_id}") :
-                                st.session_state.cropped_panels[panel_id] = preview
-                                st.session_state.crop_mode[panel_id]= False 
-                                st.rerun()  
-                        with c2 :
-                            if st.button("Cancel crop" , key =f"canceled_crop_{panel_id}") : 
-                                st.session_state.crop_mode[panel_id]= False
-                                st.rerun() 
-                    else: 
-                        st.image(pil_panel_crop, "Extracted panel")
-                        width, height = pil_panel_crop.size
-                        st.text(f"Panel size : {width} x {height} pixels")
-                        crop_coloumn ,reset_crop_coloumn = st.columns(2)
-                        with crop_coloumn : 
-                            if st.button("Crop image", key  =f"save_crop_true_{panel_id}") :
-                                st.session_state.crop_mode[panel_id]= True
-                                st.rerun()  
-                        with reset_crop_coloumn :
-                            if panel_id in st.session_state.cropped_panels : 
-                                if st.button("Cancel crop" , key =f"canceled_crop_{panel_id}") : 
-                                    del st.session_state.cropped_panels[panel_id] 
-                                    st.rerun() 
-                    
-                    if st.button("Delete panel", key = f"deleted_panel_{panel_id}") : 
-                        st.session_state.trash_bin[panel_id] = {
-                            "img" : st.session_state.cropped_panels.get(panel_id, pil_panel_crop),
-                            "analysis" : st.session_state.analysis_results.get(panel_id)
-                        }
-                        st.session_state.cropped_panels.pop(panel_id, None) #none for error handling, though one should not be able to delete something non-existing.
-                        st.session_state.analysis_results.pop(panel_id, None) 
-                        st.rerun() 
-                    
-                    
-                    panel_kept = st.checkbox(f"Panel number {panel_id}", value = True, key = f"Panel_{panel_id}" )
-                    if panel_kept : 
-                        panels_kept.append((panel_id, pil_panel_crop))
-                    
-                with col2 : 
-                    if panel_kept: 
-                        if  panel_id in st.session_state.analysis_results : 
-                            st.markdown(st.session_state.analysis_results[panel_id]) 
-                        st.text("Ready for analysis!") 
-                    else : 
-                        st.text("Panel will not be analyzed.")
-                        
-            for man_id, man_img in st.session_state.manual_crops.items() :
-                panels_kept.append((man_id, man_img)) #add the manual crops to the panels kept
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                if st.button("Save crop", key=f"save_crop_false_{panel_id}"):
+                                    st.session_state.cropped_panels[panel_id] = preview
+                                    st.session_state.crop_mode[panel_id] = False
+                                    st.rerun()
+                            with c2:
+                                if st.button("Cancel crop", key=f"canceled_crop_{panel_id}"):
+                                    st.session_state.crop_mode[panel_id] = False
+                                    st.rerun()
+                        else:
+                            st.image(pil_panel_crop, "Extracted panel")
+                            width, height = pil_panel_crop.size
+                            st.markdown(f"<div class='panel-caption'>Panel size: {width} x {height} pixels</div>", unsafe_allow_html=True)
+                            crop_coloumn, reset_crop_coloumn = st.columns(2)
+                            with crop_coloumn:
+                                if st.button("Crop image", key=f"save_crop_true_{panel_id}"):
+                                    st.session_state.crop_mode[panel_id] = True
+                                    st.rerun()
+                            with reset_crop_coloumn:
+                                if panel_id in st.session_state.cropped_panels:
+                                    if st.button("Cancel crop", key=f"canceled_crop_{panel_id}"):
+                                        del st.session_state.cropped_panels[panel_id]
+                                        st.rerun()
+
+                        if st.button("Delete panel", key=f"deleted_panel_{panel_id}"):
+                            st.session_state.trash_bin[panel_id] = {
+                                "img": st.session_state.cropped_panels.get(panel_id, pil_panel_crop),
+                                "analysis": st.session_state.analysis_results.get(panel_id)
+                            }
+                            st.session_state.cropped_panels.pop(panel_id, None)
+                            st.session_state.analysis_results.pop(panel_id, None)
+                            st.rerun()
+
+                        panel_kept = st.checkbox(f"Keep panel {panel_id}", value=True, key=f"Panel_{panel_id}")
+                        if panel_kept:
+                            panels_kept.append((panel_id, pil_panel_crop))
+
+                    with col2:
+                        if panel_kept:
+                            if panel_id in st.session_state.analysis_results:
+                                st.markdown(st.session_state.analysis_results[panel_id])
+                            st.caption("Ready for analysis!")
+                        else:
+                            st.caption("⏸Panel will not be analyzed.")
+
+            for man_id, man_img in st.session_state.manual_crops.items():
+                panels_kept.append((man_id, man_img))
 
             st.session_state.panels_kept = panels_kept
-                
-        if st.session_state.trash_bin is not None : 
-            with st.expander("Trash bin"): 
-                for panel_id, trash_item in list(st.session_state.trash_bin.items()) : 
-                    st.image(trash_item["img"], f"Analysis : {trash_item['analysis']}") 
-                    if st.button("Restore panel" , key = f"restored_panel_{panel_id}") : 
-                        if panel_id in st.session_state.trash_bin : 
-                            trash_item = st.session_state.trash_bin[panel_id]
-                            st.session_state.cropped_panels[panel_id] = trash_item["img"] 
-                            if trash_item["analysis"] is not None :
-                                st.session_state.analysis_results[panel_id] = trash_item["analysis"] 
-                            del st.session_state.trash_bin[panel_id] 
-                            st.rerun() 
-            
-        
-        with st.expander("Actions & Analysis Hub", expanded=True):
-            if st.button("Run QWEN analsysis", type="secondary", key="run_qwen_analysis") :
-                st.spinner("Analyzing panels...")
-                counter = 0
-                for panel_id, pil_panel in panels_kept : 
-                    counter+=1 
-                    panel_result = run_qwen(pil_panel, processor, model, user_text) 
-                    if isinstance(panel_result, list) : 
-                        panel_result = panel_result[0] 
-                    description = panel_result.strip()
-                    description = description.removeprefix("```json").removeprefix("```").strip()
-                    description = description.removesuffix("```").strip()
+            st.caption(
+                f" {len(panels) + len(st.session_state.manual_crops)} panel(s) total · "
+                f"{len(panels_kept)} kept for analysis · "
+                f"{len(st.session_state.analysis_results)} already analyzed"
+            )
 
-                    st.session_state.analysis_results[panel_id] = description 
-                    # [TYPO FIX]: Fixed typo in success message from "sucessfully" to "successfully".
-                    st.success(f"Panel {panel_id} has been successfully analyzed!")
-                    st.code(panel_result, language = 'json') #for nice JSON formatting 
-                st.session_state.panels_kept = panels_kept 
-                # [TYPO FIX]: Fixed typo in text message from "panals" to "panels".
+        if st.session_state.trash_bin is not None:
+            with st.expander("Trash bin"):
+                trash_items = list(st.session_state.trash_bin.items())
+                for row_start in range(0, len(trash_items), 3):
+                    row_items = trash_items[row_start:row_start + 3]
+                    grid_cols = st.columns(3)
+                    for col, (panel_id, trash_item) in zip(grid_cols, row_items):
+                        with col:
+                            with st.container(border=True):
+                                st.image(trash_item["img"], f"Analysis : {trash_item['analysis']}")
+                                if st.button("Restore panel", key=f"restored_panel_{panel_id}"):
+                                    if panel_id in st.session_state.trash_bin:
+                                        trash_item = st.session_state.trash_bin[panel_id]
+                                        st.session_state.cropped_panels[panel_id] = trash_item["img"]
+                                        if trash_item["analysis"] is not None:
+                                            st.session_state.analysis_results[panel_id] = trash_item["analysis"]
+                                        del st.session_state.trash_bin[panel_id]
+                                        st.rerun()
+
+        st.markdown("Actions & Analysis Hub")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Panels kept", len(st.session_state.panels_kept))
+        m2.metric("QWEN analyses", len(st.session_state.analysis_results))
+        m3.metric("Descriptions", len(st.session_state.gem_results))
+        m4.metric("Hallucination checks", len(st.session_state.hallucination_out))
+
+        tab_labels = [
+            f"QWEN Analysis {'✅' if st.session_state.analysis_results else ''}",
+            f"Export",
+            f"Embed Text {'✅' if st.session_state.text_results else ''}",
+            f"Panel Descriptions {'✅' if st.session_state.gem_results else ''}",
+            f"LLM-as-Judge {'✅' if st.session_state.textcomp else ''}",
+            f"SummaC {'✅' if st.session_state.summac_results else ''}",
+            f"Hallucinations {'✅' if st.session_state.hallucination_out else ''}",
+        ]
+        (
+            tab_qwen,
+            tab_export,
+            tab_embed,
+            tab_gemini,
+            tab_judge,
+            tab_summac,
+            tab_hallu,
+        ) = st.tabs(tab_labels)
+
+        with tab_qwen:
+            if st.button("Run QWEN analysis", type="secondary", key="run_qwen_analysis"):
+                with st.spinner("Analyzing the panels."):
+                    counter = 0
+                    for panel_id, pil_panel in panels_kept:
+                        counter += 1
+                        panel_result = run_qwen(pil_panel, processor, model, user_text)
+                        if isinstance(panel_result, list):
+                            panel_result = panel_result[0]
+                        description = panel_result.strip()
+                        description = description.removeprefix("```json").removeprefix("```").strip()
+                        description = description.removesuffix("```").strip()
+
+                        st.session_state.analysis_results[panel_id] = description
+                        st.success(f"Panel {panel_id} has been successfully analyzed!")
+                        st.code(panel_result, language='json')
+                st.session_state.panels_kept = panels_kept
                 st.text(f"Number of panels analyzed : {counter}")
 
-            if st.button("Export to JSON") :
-                if not st.session_state.panels_kept : 
-                    st.warning("Run the analysis first!")
-                else :
-                    with open("results.json" , "w") as f : 
-                        json.dump(
-                            st.session_state.analysis_results, f, indent = 4   
-                        )
-                st.success("Successfully exported to a JSON file!") 
-        
-        
-            if st.button("Embed the text") :             
-                text_analysis_result = text_analysis(text_original, text_analyis_instructions)
-                st.session_state.text_results = text_analysis_result
-                st.markdown(text_analysis_result)
-
-
-            if st.button("Generate Panel Descriptions") : 
-                generated_descriptions = gemini_analysis(panels_kept)
-                st.session_state.gem_results.update(generated_descriptions)
+        with tab_export:
+            if not st.session_state.panels_kept:
+                st.warning("Run the analysis first!")
+            elif not st.session_state.analysis_results:
+                st.warning("Run the QWEN analysis first!")
+            else:
+                export_json = json.dumps(st.session_state.analysis_results, indent=4)
+                st.download_button(
+                    label="Export to JSON",
+                    data=export_json,
+                    file_name="results.json",
+                    mime="application/json",
+                    key="export_qwen_json",
+                )
                 
-                with st.expander("Generated panel descriptions", expanded = True) : 
+        with tab_embed:
+            if st.button("Embed the text"):
+                with st.spinner("Embedding the text"):
+                    text_analysis_result = text_analysis(text_original, text_analyis_instructions)
+                    st.session_state.text_results = text_analysis_result
+
+            if st.session_state.text_results:
+                with st.expander("Embedded text", expanded=True):
+                    st.markdown(st.session_state.text_results)
+
+        with tab_gemini:
+            if st.button("Generate Panel Descriptions"):
+                with st.spinner("Generating panel descriptions..."):
                     generated_descriptions = gemini_analysis(panels_kept)
-                    st.markdown("\n\n".join(generated_descriptions.values()) ) #markdown requies \n\n
-                    st.session_state.gem_results.update(generated_descriptions) 
-                    print(st.session_state.analysis_results) 
+                    st.session_state.gem_results.update(generated_descriptions)
 
-            if st.button("Run LLMaaJ entailment analysis") : 
-                if not st.session_state.gem_results : 
-                    st.warning("Run the text analysis first!")  
-                else : 
-                    st.session_state.textcomp = textcomp(text_original, st.session_state.gem_results) 
-                    
-                if st.session_state.textcomp:
-                    for panel_id, verdict in st.session_state.textcomp.items() : 
-                        st.markdown(f"Panel : {panel_id}  : {verdict}")
-                    
-            if st.button("Run SummaC Analysis") :
-                if not st.session_state.gem_results : 
+            if st.session_state.gem_results:
+                with st.expander("Generated panel descriptions", expanded=True):
+                    st.markdown("\n\n".join(st.session_state.gem_results.values()))
+
+        with tab_judge:
+            if st.button("Run LLMaaJ entailment analysis"):
+                if not st.session_state.gem_results:
+                    st.warning("Run the text analysis first!")
+                else:
+                    with st.spinner("Running the analysis..."):
+                        st.session_state.textcomp = textcomp(text_original, st.session_state.gem_results)
+
+            if st.session_state.textcomp:
+                with st.expander("LLM-as-a-Judge analysis", expanded=True):
+                    with st.spinner("Generating the LLM-as-a-Judge analysis results..."):
+                        for panel_id, verdict in st.session_state.textcomp.items():
+                            st.markdown(f"Panel : {panel_id}  : {verdict}")
+
+        with tab_summac:
+            if st.button("Run SummaC Analysis"):
+                if not st.session_state.gem_results:
                     st.warning("Generate a panel description first.")
-                else :
-                    analysis = summac(text_original, st.session_state.gem_results) 
-                    st.session_state.summac_results = analysis #summac already returns a dictionary
-                    st.write(st.session_state.summac_results)
-                if st.session_state.summac_results :
-                    for panel_id , description in st.session_state.summac_results.items() :
-                        print(f"SummaC analysis for panel {panel_id} : {description}")
-                
-            if st.button("Check hallucinations") : 
+                else:
+                    with st.spinner("Running the SummaC analysis..."):
+                        analysis = summac(text_original, st.session_state.gem_results)
+                        st.session_state.summac_results = analysis
+                        st.write(st.session_state.summac_results)
+            
+        with tab_hallu:
+            if st.button("Check hallucinations"):
+                with st.spinner("Checking for hallucinations..."):
                     for panel_id, panel_img in panels_kept:
                         qwen_output = st.session_state.analysis_results.get(panel_id)
                         gemini_description = st.session_state.gem_results.get(panel_id)
@@ -711,15 +1019,15 @@ DO NOT SKIP JUSTIFICATIONS. If you believe you cannot provide a justification, s
                         summac_score = st.session_state.summac_results.get(panel_id)
 
                         result = hallucination(
-                            entailment_verdict,
-                            summac_score,
-                            qwen_output,
-                            text_original,
-                            gemini_description,
-                            {pid: img for pid, img in panels_kept},
-                            panel_id
-                        )
-                        st.session_state.hallucination_out[panel_id] = result
+                        entailment_verdict,
+                        summac_score,
+                        qwen_output,
+                        text_original,
+                        gemini_description,
+                        {pid: img for pid, img in panels_kept},
+                        panel_id
+                    )
+                    st.session_state.hallucination_out[panel_id] = result
 
             if st.session_state.hallucination_out:
                 with st.expander("Hallucination Audit Results", expanded=True):
